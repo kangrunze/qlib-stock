@@ -68,3 +68,6 @@ catboost_info/
 # Data files (optional, uncomment if data should not be committed)
 # data/
 # *.csv
+
+# Qlib converted data (large binary files)
+qlib_data/

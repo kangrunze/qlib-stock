@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # ===== 全局路径配置 =====
 paths:
   base_dir: "d:/project/qlib-stock/stock-ai"
@@ -13,9 +14,18 @@ paths:
   reference_dir: "d:/project/qlib-stock/stock-ai/data/reference"
 
 # ===== 数据源配置 =====
+# data_format: 底层数据格式，决定 DataStore 使用哪种后端读取数据
+#   - "parquet": 从 parquet_dir 读取 .parquet 文件（DuckDB 查询）
+#   - "csv": 从 csv_dir 读取 .csv 文件（CsvDataLoader）
+#   - "qlib": 从 qlib_dir 读取 Qlib bin 格式
+# 任意上层代码（train/daily/charts/backtest）都通过 data_store 统一接口访问数据，
+# 修改此处即可切换底层数据源，无需改动业务代码
 data_source:
-  primary: "csv"               # csv / akshare / baostock
-  csv_dir: "D:/data"           # 自有 CSV 数据目录
+  data_format: "csv"           # parquet / csv / qlib
+  csv_dir: "D:/data"           # CSV 数据目录（data_format=csv 时生效）
+  parquet_dir: "d:/project/qlib-stock/stock-ai/data/daily"  # Parquet 目录
+  qlib_dir: "d:/project/qlib-stock/qlib_data/cn_data"        # Qlib bin 目录
+  primary: "csv"               # 兼容旧配置，保留
   backup: "baostock"
   start_date: "2005-01-01"
   max_workers: 10             # 多线程下载并发数
@@ -80,3 +90,25 @@ model:
   ensemble_weights: [0.5, 0.3, 0.2]
   early_stopping_rounds: 50
   enable_optuna: true
+
+# ===== 策略配置 =====
+strategy:
+  top_k: 30                   # 选股数量
+  rebalance_freq: "monthly"   # 调仓频率: daily/weekly/monthly/quarterly
+  weight_method: "equal"      # 权重方法: equal/score_weighted/risk_parity
+  industry_neutral: true      # 是否行业中性化
+  max_stocks_per_industry: 5  # 单行业最大持仓数
+
+# ===== 风险控制 =====
+risk:
+  max_position_pct: 0.10      # 单票最大仓位
+  max_industry_pct: 0.30      # 单行业最大仓位
+  stop_loss_pct: 0.08         # 止损比例
+
+# ===== 回测配置 =====
+backtest:
+  initial_cash: 1000000       # 初始资金（元）
+  commission_buy: 0.00025     # 买入手续费（万2.5）
+  commission_sell: 0.00125    # 卖出手续费（含印花税万10）
+  slippage_bps: 0.001         # 滑点
+  benchmark: "000905"         # 基准指数（中证500）

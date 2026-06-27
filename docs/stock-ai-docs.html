@@ -396,7 +396,10 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
     <li><a href="#tuning-model" class="toc-h3">7.1 模型参数</a></li>
     <li><a href="#tuning-features" class="toc-h3">7.2 特征参数</a></li>
     <li><a href="#tuning-strategy" class="toc-h3">7.3 策略参数</a></li>
-    <li><a href="#faq" class="toc-h2">8. 常见问题</a></li>
+    <li><a href="#csv-loader" class="toc-h2">6.1 CSV 数据源</a></li>
+    <li><a href="#charts" class="toc-h2">9. 图形报表</a></li>
+    <li><a href="#faq" class="toc-h2">10. 常见问题</a></li>
+    <li><a href="#known-issues" class="toc-h3">10.9 Qlib 兼容性</a></li>
   </ul>
 </nav>
 
@@ -447,6 +450,7 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
     stock_universe.yaml     <span class="comment"># 选股池</span>
   <span class="dir">data_center/</span>         <span class="comment"># Phase 1: 数据中心</span>
     akshare_client.py       <span class="comment"># AKShare API 封装</span>
+    csv_loader.py           <span class="comment"># CSV 数据加载器（新增）</span>
     download_history.py     <span class="comment"># 全量历史数据下载</span>
     daily_update.py         <span class="comment"># 日度增量更新</span>
     data_validator.py       <span class="comment"># 数据质量校验</span>
@@ -490,6 +494,8 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
     notification.py         <span class="comment"># 通知日志</span>
   train.py                 <span class="comment"># 训练入口</span>
   daily_run.py             <span class="comment"># 每日运行入口</span>
+  generate_charts.py       <span class="comment"># 图形报表生成（新增）</span>
+  run_qlib_workflow.py     <span class="comment"># Qlib 数据转换 + workflow（新增）</span>
   requirements.txt         <span class="comment"># Python 依赖</span>
 </div>
 
@@ -581,8 +587,12 @@ python -c "import akshare; print(akshare.__version__)"</code></pre>
 <table>
 <thead><tr><th>参数名</th><th>默认值</th><th>说明</th><th>调参建议</th></tr></thead>
 <tbody>
-<tr><td><code>primary</code></td><td><code>akshare</code></td><td>主数据源</td><td>akshare 免费且稳定，推荐</td></tr>
-<tr><td><code>start_date</code></td><td><code>2005-01-01</code></td><td>历史数据起始日期</td><td>回测需要多长历史就设多长</td></tr>
+<tr><td><code>data_format</code></td><td><code>csv</code></td><td>底层数据格式</td><td>parquet / csv / qlib，修改此处即可切换底层数据源</td></tr>
+<tr><td><code>csv_dir</code></td><td><code>D:/data</code></td><td>CSV 数据目录</td><td>data_format=csv 时生效，命名格式 sh.XXXXXX.csv</td></tr>
+<tr><td><code>parquet_dir</code></td><td><code>.../data/daily</code></td><td>Parquet 目录</td><td>data_format=parquet 时生效</td></tr>
+<tr><td><code>qlib_dir</code></td><td><code>.../qlib_data/cn_data</code></td><td>Qlib bin 目录</td><td>data_format=qlib 时生效</td></tr>
+<tr><td><code>primary</code></td><td><code>csv</code></td><td>兼容旧配置</td><td>保留，与 data_format 保持一致即可</td></tr>
+<tr><td><code>backup</code></td><td><code>baostock</code></td><td>备用数据源</td><td>-</td></tr>
 <tr><td><code>max_workers</code></td><td><code>10</code></td><td>多线程并发数</td><td>根据 CPU 核心数调整，建议 5-20</td></tr>
 <tr><td><code>retry_max</code></td><td><code>3</code></td><td>下载失败重试次数</td><td>网络不稳定时增大到 5</td></tr>
 <tr><td><code>retry_delay</code></td><td><code>2</code></td><td>重试间隔秒数</td><td>AKShare 限流时增大到 5</td></tr>
@@ -862,6 +872,47 @@ report = validator.validate_all("data/daily/")
 
 # 检查项：缺失值/价格关系/异常跳变/重复数据
 print(report.summary())</code></pre>
+
+<h4>data_store.py — 统一数据存储接口（核心新增）</h4>
+<p><mark class="key">DataStore</mark> 是数据访问的统一入口，屏蔽底层格式差异。上层代码（train.py / daily_run.py / generate_charts.py / backtest）统一通过此接口访问数据，修改 <code>settings.yaml</code> 中的 <code>data_format</code> 即可切换底层格式，<strong>无需改动任何业务代码</strong>。</p>
+
+<pre><code>from data_center.data_store import DataStore
+
+# 根据 settings.yaml 中 data_source.data_format 自动选择后端
+store = DataStore(start_date="2020-01-01", end_date="2024-12-31")
+
+# 统一接口，与底层格式无关
+codes = store.get_stock_list()                          # 所有股票代码
+df = store.get_stock_price("600000", "2023-01-01", "2024-01-01")  # 单只股票
+data_dict = store.load_all(sample_size=100)             # 批量加载
+multi_df = store.get_price_history_multi(['600000', '000001'])   # 多只股票</code></pre>
+
+<div class="callout success">
+  <div class="callout-title">支持的底层格式</div>
+  <table style="width:100%;margin-top:0.5rem;">
+  <tr><td><strong>csv</strong></td><td>从 csv_dir 读取 .csv 文件（CsvDataLoader 后端）</td></tr>
+  <tr><td><strong>parquet</strong></td><td>从 parquet_dir 读取 .parquet（DuckDB 后端）</td></tr>
+  <tr><td><strong>qlib</strong></td><td>从 qlib_dir 读取 Qlib bin 格式（Qlib 后端）</td></tr>
+  </table>
+</div>
+
+<h4>csv_loader.py — CSV 数据加载器</h4>
+<p>CSV 格式底层实现，被 <code>DataStore</code> 自动调用。兼容 <code>sh.XXXXXX.csv</code> / <code>sz.XXXXXX.csv</code> 命名格式，自动识别代码、标准化列名、生成派生字段。</p>
+
+<pre><code>from data_center.csv_loader import CsvDataLoader
+
+loader = CsvDataLoader(data_dir="D:/data")
+codes = loader.get_stock_list()          # ['600000', '000001', ...]
+df = loader.load_single("600000")        # 单只股票
+data_dict = loader.load_all(sample_size=100)</code></pre>
+
+<div class="callout">
+  <div class="callout-title">CSV 数据结构要求</div>
+  <p><strong>文件名</strong>：<code>sh.600000.csv</code> / <code>sz.000001.csv</code>（自动提取 6 位代码）</p>
+  <p><strong>必需列</strong>：date, open, high, low, close, volume</p>
+  <p><strong>可选列</strong>：amount, pct_chg, turnover_rate, amplitude</p>
+  <p><strong>自动生成</strong>：code, amount, pct_chg, preclose, is_st, is_suspended</p>
+</div>
 
 <h4>duckdb_store.py</h4>
 <p>DuckDB 查询接口，支持 SQL 查询 Parquet 数据。</p>
@@ -1155,10 +1206,23 @@ report.save_report(metrics, "output/backtest_report.json")</code></pre>
 
 <h3 id="usage-train">6.1 训练模型</h3>
 
+<h4>使用自有 CSV 数据训练（推荐）</h4>
+<p>将 <code>config/settings.yaml</code> 中的 <code>data_source.primary</code> 设为 <code>"csv"</code>，并指定 <code>csv_dir</code>，即可直接使用自有数据：</p>
+
+<pre><code># config/settings.yaml
+data_source:
+  data_format: "csv"    # parquet / csv / qlib
+  csv_dir: "D:/data"
+  parquet_dir: ".../data/daily"
+  qlib_dir: ".../qlib_data/cn_data"</code></pre>
+
+<pre><code># 切换数据源只需改 settings.yaml，无需改代码
+python train.py --sample 100 --start 2020-01-01 --end 2024-12-31</code></pre>
+
 <h4>快速测试（推荐首次运行）</h4>
 <pre><code>python train.py --sample 50 --start 2023-01-01 --end 2024-06-30</code></pre>
 
-<h4>完整训练</h4>
+<h4>使用 AKShare 数据训练</h4>
 <pre><code># 第一步：下载历史数据（首次）
 python data_center/download_history.py --sample 500
 
@@ -1346,8 +1410,73 @@ print(best_lgb)
 </table>
 </div>
 
-<!-- Chapter 8: FAQ -->
-<h2 id="faq">8. 常见问题</h2>
+<!-- Chapter 9: Charts -->
+<h2 id="charts">9. 图形报表</h2>
+
+<p>项目内置了独立的图形报表生成脚本 <code>generate_charts.py</code>，可直接从自有 CSV 数据生成完整的量化分析图表，无需依赖 Qlib 的分析模块（Qlib 0.9.7 与 numpy 2.x 存在兼容性 bug）。</p>
+
+<h3>9.1 图表生成脚本</h3>
+
+<pre><code># 使用自有 CSV 数据生成 10 张分析图表
+python generate_charts.py --sample 50
+
+# 输出目录
+output/qlib_charts/
+  01_feature_ic.png          # Top 20 因子 IC 柱状图
+  02_ic_series.png           # IC 时间序列 + 20日滚动均值
+  03_model_performance.png   # 预测 vs 实际收益散点图
+  04_equity_curve.png        # Top-K 策略 vs 等权基准净值曲线
+  05_drawdown.png            # 回撤分析（红色填充区域）
+  06_return_distribution.png # 日收益率分布 + 正态拟合
+  07_feature_importance.png  # Top 30 特征重要性（渐变色）
+  08_rolling_sharpe.png      # 60日滚动 Sharpe 比率
+  09_monthly_returns.png     # 月度收益率热力图
+  10_risk_metrics.png        # 风险指标仪表盘</code></pre>
+
+<h3>9.2 数据来源</h3>
+<p>图表生成脚本自动从 <code>config/settings.yaml</code> 中配置的 <code>csv_dir</code> 读取数据，经过以下流程：</p>
+<ol>
+  <li>CSV 数据加载（<code>CsvDataLoader</code>）</li>
+  <li>技术因子计算（<code>TechnicalFactorCalculator</code>，71 个因子）</li>
+  <li>横截面因子计算（<code>CrossSectionCalculator</code>）</li>
+  <li>标签生成（<code>LabelGenerator</code>）</li>
+  <li>LightGBM 模型训练与预测</li>
+  <li>评估指标计算与图表输出</li>
+</ol>
+
+<h3>9.3 图表说明</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>图表</th><th>用途</th><th>依赖模块</th></tr></thead>
+<tbody>
+<tr><td>因子 IC 分析</td><td>识别预测能力最强的特征因子</td><td>ICAnalyzer</td></tr>
+<tr><td>IC 时间序列</td><td>观察因子稳定性随时间变化</td><td>ICAnalyzer</td></tr>
+<tr><td>模型性能散点</td><td>评估预测值与实际收益的相关性</td><td>手动计算</td></tr>
+<tr><td>净值曲线</td><td>对比策略与基准的收益走势</td><td>手动计算</td></tr>
+<tr><td>回撤分析</td><td>识别最大回撤及持续期</td><td>DrawdownAnalyzer</td></tr>
+<tr><td>收益分布</td><td>检验收益率是否服从正态分布</td><td>scipy.stats</td></tr>
+<tr><td>特征重要性</td><td>定位模型最依赖的特征</td><td>LightGBM</td></tr>
+<tr><td>滚动 Sharpe</td><td>动态评估风险调整收益</td><td>SharpeAnalyzer</td></tr>
+<tr><td>月度收益热力图</td><td>识别季节性收益模式</td><td>手动计算</td></tr>
+<tr><td>风险仪表盘</td><td>汇总核心风险指标</td><td>SharpeAnalyzer + DrawdownAnalyzer</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>9.4 Qlib 原生分析（可选）</h3>
+<p>如需使用 Qlib 官方的分析报表，项目同时提供了 <code>run_qlib_workflow.py</code> 脚本，将 CSV 数据转换为 Qlib bin 格式后运行标准 workflow。</p>
+
+<div class="callout warning">
+  <div class="callout-title">注意：Qlib 0.9.7 兼容性问题</div>
+  <p>Qlib 0.9.7 与 numpy 2.x 存在兼容性问题，运行时会报错 <code>np.isclose() got an unexpected keyword argument 'rtol'</code>。解决方案：</p>
+  <ul>
+    <li>方案 A（推荐）：使用项目自有的 <code>generate_charts.py</code> 生成图表</li>
+    <li>方案 B：降级 numpy 到 1.x：<code>pip install numpy&lt;2</code></li>
+  </ul>
+</div>
+
+<!-- Chapter 10: FAQ -->
+<h2 id="faq">10. 常见问题</h2>
 
 <h4>Q1: 运行 train.py 报 "Population must be a sequence" 错误？</h4>
 <p>这是随机采样股票列表时的错误，说明获取到的股票列表为空或格式不对。检查 AKShare 网络连接，或增大 <code>--sample</code> 参数。</p>
@@ -1388,6 +1517,61 @@ benchmark: "000300"
 
 # 中证1000
 benchmark: "000852"</code></pre>
+
+<h4>Q9: 标签生成报错 "You are trying to merge on object and datetime64[ns] columns"？</h4>
+<p>这是日期类型不匹配导致的。<code>label_generator.py</code> 在 merge 前已将 <code>date</code> 列统一转为 <code>datetime64[ns]</code>。如果仍然报错，确保项目已更新到最新版本：</p>
+<pre><code>git pull  # 或重新下载最新代码</code></pre>
+
+<h4>Q10: 自有 CSV 数据如何接入系统？</h4>
+<p>三步完成接入，<strong>无需修改任何业务代码</strong>：</p>
+<ol>
+  <li>确保 CSV 文件命名格式为 <code>sh.600000.csv</code> 或 <code>sz.000001.csv</code></li>
+  <li>确保 CSV 包含列：date, open, high, low, close, volume（amount 可选）</li>
+  <li>修改 <code>config/settings.yaml</code> 中的 <code>data_format</code>：
+    <pre><code>data_source:
+  data_format: "csv"      # 切换到 CSV 数据源
+  csv_dir: "D:/data"</code></pre>
+  </li>
+</ol>
+<p>修改后 train.py / daily_run.py / generate_charts.py 等全部代码自动使用新数据源，无需任何改动。</p>
+
+<h4>Q12: 如何在 CSV / Parquet / Qlib 之间切换数据源？</h4>
+<p>只需修改 <code>config/settings.yaml</code> 中的 <code>data_source.data_format</code>：</p>
+<pre><code># CSV 自有数据
+data_source:
+  data_format: "csv"
+  csv_dir: "D:/data"
+
+# Parquet 格式
+data_source:
+  data_format: "parquet"
+  parquet_dir: "d:/project/qlib-stock/stock-ai/data/daily"
+
+# Qlib bin 格式
+data_source:
+  data_format: "qlib"
+  qlib_dir: "d:/project/qlib-stock/qlib_data/cn_data"</code></pre>
+<p>DataStore 统一接口会自动创建对应后端，上层代码完全透明。</p>
+
+<h4>Q11: Qlib 分析模块报错怎么办？</h4>
+<p>Qlib 0.9.7 与 numpy 2.x 存在已知兼容性问题（<code>np.isclose</code> 参数类型错误）。推荐方案：</p>
+<ol>
+  <li><strong>推荐</strong>：使用项目自有的 <code>generate_charts.py</code> 生成图表，不依赖 Qlib 的分析模块</li>
+  <li><strong>可选</strong>：降级 numpy：<code>pip install numpy&lt;2</code>，然后运行 <code>run_qlib_workflow.py</code></li>
+</ol>
+
+<h3 id="known-issues">10.9 已知问题与兼容性</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>问题</th><th>原因</th><th>解决方案</th></tr></thead>
+<tbody>
+<tr><td>Qlib <code>np.isclose()</code> 报错</td><td>Qlib 0.9.7 与 numpy 2.x 不兼容</td><td>使用 <code>generate_charts.py</code> 或降级 numpy</td></tr>
+<tr><td>Label merge 日期类型错误</td><td>object 与 datetime64 混用</td><td>已在 <code>label_generator.py</code> 修复</td></tr>
+<tr><td>CSV 列名含中文</td><td>AKShare 原始中文列名</td><td><code>CsvDataLoader</code> 自动标准化映射</td></tr>
+<tr><td>数据不足警告</td><td>股票上市时间太短</td><td>正常警告，系统会自动跳过</td></tr>
+</tbody>
+</table>
+</div>
 
 <div class="footer">
   <p>A股中长线AI量化选股系统 v1.0 | 技术文档 | 2026-06-27</p>

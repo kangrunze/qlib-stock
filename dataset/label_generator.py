@@ -209,6 +209,9 @@ class LabelGenerator:
                     if labels.empty:
                         continue
                     labels = labels.rename(columns={"label": f"label_{label_type}"})
+                    # 统一日期类型，避免 object 与 datetime64 不匹配
+                    label_df["date"] = pd.to_datetime(label_df["date"])
+                    labels["date"] = pd.to_datetime(labels["date"])
                     label_df = label_df.merge(labels, on="date", how="left")
 
                 # 只保留有至少一个标签的行

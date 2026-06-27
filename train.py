@@ -201,7 +201,7 @@ class TrainingPipeline:
     # ======================== 各步骤实现 ========================
 
     def _step_load_data(self):
-        """Step 2: 加载股票数据。支持 CSV / Parquet / AKShare 三种数据源。"""
+        """Step 2: 加载股票数据。通过 DataStore 统一接口，自动适配 CSV/Parquet/Qlib。"""
         if self.skip_data:
             logger.info("[Step 2/10] 跳过数据加载 (--skip-data)")
             return None, []
@@ -209,88 +209,35 @@ class TrainingPipeline:
         logger.info(f"[Step 2/10] 加载数据: {self.start_date} ~ {self.end_date}")
 
         try:
-            # 读取配置判断数据源
-            config = self.load_config()
-            primary_source = config.get("data_source", {}).get("primary", "csv")
-            csv_dir = config.get("data_source", {}).get("csv_dir", "D:/data")
+            from data_center.data_store import DataStore
 
-            if primary_source == "csv":
-                # ====== CSV 数据源 ======
-                logger.info("数据源: CSV (%s)", csv_dir)
-                from data_center.csv_loader import CsvDataLoader
+            # DataStore 根据 settings.yaml 中 data_source.data_format 自动选择后端
+            store = DataStore(start_date=self.start_date, end_date=self.end_date)
 
-                loader = CsvDataLoader(
-                    data_dir=csv_dir,
-                    start_date=self.start_date,
-                    end_date=self.end_date,
-                )
+            # 获取股票列表
+            stock_list = store.get_stock_list()
+            logger.info("发现 %d 只股票", len(stock_list))
 
-                # 获取股票列表
-                stock_list = loader.get_stock_list()
-                logger.info("发现 %d 只股票", len(stock_list))
+            if self.sample_size > 0 and len(stock_list) > self.sample_size:
+                import random
+                random.seed(42)
+                stock_list = random.sample(stock_list, self.sample_size)
 
-                if self.sample_size > 0 and len(stock_list) > self.sample_size:
-                    import random
-                    random.seed(42)
-                    stock_list = random.sample(stock_list, self.sample_size)
+            logger.info(f"加载 {len(stock_list)} 只股票...")
 
-                logger.info(f"加载 {len(stock_list)} 只股票...")
+            # 批量加载
+            price_data = store.load_all(sample_size=0)
+            # 如果采样了，过滤一下
+            if self.sample_size > 0:
+                price_data = {k: v for k, v in price_data.items() if k in set(stock_list)}
 
-                # 批量加载
-                price_data = loader.load_all(sample_size=0)  # stock_list 已过滤
-                # 如果 load_all 返回了超出 stock_list 的数据，过滤一下
-                if self.sample_size > 0:
-                    price_data = {k: v for k, v in price_data.items() if k in set(stock_list)}
+            loaded = len(price_data)
+            failed = len(stock_list) - loaded
+            logger.info(f"数据加载完成: 成功{loaded}, 失败{failed}")
+            self.training_metrics["data_loaded"] = loaded
+            self.training_metrics["data_failed"] = failed
 
-                loaded = len(price_data)
-                failed = len(stock_list) - loaded
-                logger.info(f"数据加载完成: 成功{loaded}, 失败{failed}")
-                self.training_metrics["data_loaded"] = loaded
-                self.training_metrics["data_failed"] = failed
-
-                return price_data, list(price_data.keys())
-
-            else:
-                # ====== Parquet/AKShare 数据源 ======
-                from data_center.akshare_client import AKShareClient
-                from data_center.duckdb_store import DuckDBStore
-
-                client = AKShareClient()
-                store = DuckDBStore()
-
-                logger.info("获取A股股票列表...")
-                try:
-                    stock_list = client.get_stock_list()
-                except Exception:
-                    stock_list = self._get_default_stock_list()
-
-                if self.sample_size > 0 and len(stock_list) > self.sample_size:
-                    import random
-                    random.seed(42)
-                    stock_list = random.sample(stock_list, self.sample_size)
-
-                logger.info(f"股票数量: {len(stock_list)}")
-                logger.info("加载日线数据...")
-
-                price_data = {}
-                loaded = 0
-                failed = 0
-                for code in stock_list:
-                    try:
-                        df = store.get_stock_price(code, self.start_date, self.end_date)
-                        if df is not None and not df.empty:
-                            price_data[code] = df
-                            loaded += 1
-                        else:
-                            failed += 1
-                    except Exception:
-                        failed += 1
-
-                logger.info(f"数据加载完成: 成功{loaded}, 失败{failed}")
-                self.training_metrics["data_loaded"] = loaded
-                self.training_metrics["data_failed"] = failed
-
-                return price_data, stock_list
+            return price_data, list(price_data.keys())
 
         except ImportError as e:
             logger.warning(f"数据模块未就绪: {e}, 使用模拟数据")
