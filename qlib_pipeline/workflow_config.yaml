@@ -1,0 +1,80 @@
+# -*- coding: utf-8 -*-
+# Qlib Pipeline 工作流配置
+# 支持 Alpha158 / Alpha360 切换，LightGBM 回归/排序，标准 train/valid/test 切分
+
+qlib:
+  provider_uri: "d:/project/qlib-stock/qlib_data/cn_data"
+  region: "cn"
+
+# 数据处理器配置 (Alpha158/Alpha360 共用)
+# 时间范围根据实际 Qlib 数据自动调整 (当前数据: 2020-01 ~ 2026-06)
+data_handler:
+  start_time: "2020-01-01"
+  end_time: "2025-12-31"
+  fit_start_time: "2020-01-01"
+  fit_end_time: "2023-06-30"
+  instruments: "csi300"
+
+# 数据集配置
+dataset:
+  handler: "Alpha158"          # Alpha158 或 Alpha360，可通过 --handler 参数覆盖
+  segments:
+    train: ["2020-01-01", "2023-06-30"]
+    valid: ["2023-07-01", "2024-06-30"]
+    test:  ["2024-07-01", "2025-12-31"]
+
+# 模型配置
+model:
+  type: "lgb"                  # lgb 或 xgb
+  lgb:
+    class: "LGBModel"
+    module_path: "qlib.contrib.model.gbdt"
+    kwargs:
+      loss: "mse"              # mse(回归) 或 rank(排序)
+      colsample_bytree: 0.8879
+      learning_rate: 0.0421
+      subsample: 0.8789
+      lambda_l1: 205.6999
+      lambda_l2: 580.9768
+      max_depth: 8
+      num_leaves: 210
+      num_threads: 20
+  xgb:
+    class: "XGBModel"
+    module_path: "qlib.contrib.model.gbdt"
+    kwargs:
+      loss: "mse"
+      colsample_bytree: 0.8879
+      learning_rate: 0.0421
+      max_depth: 8
+      n_estimators: 1000
+      subsample: 0.8789
+      num_threads: 20
+
+# 回测配置
+backtest:
+  executor:
+    class: "SimulatorExecutor"
+    module_path: "qlib.backtest.executor"
+    kwargs:
+      time_per_step: "day"
+      generate_portfolio_metrics: true
+  strategy:
+    class: "TopkDropoutStrategy"
+    module_path: "qlib.contrib.strategy.signal_strategy"
+    kwargs:
+      topk: 50
+      n_drop: 5
+  # PortAnaRecord 要求的嵌套结构
+  backtest:
+    start_time: "2024-07-01"
+    end_time: "2025-12-31"
+    account: 100000000
+    benchmark: "600000"   # 当前数据中无指数数据，使用 600000 作为占位基准；实际生产建议下载 SH000300 指数数据
+    exchange_kwargs:
+      freq: "day"
+      limit_threshold: 0.095
+      deal_price: "close"
+      open_cost: 0.0005
+      close_cost: 0.0015
+      min_cost: 5

@@ -45,7 +45,9 @@ QLIB_DATA_DIR = Path("d:/project/qlib-stock/qlib_data/cn_data")
 CHART_OUTPUT_DIR = Path("d:/project/qlib-stock/output/qlib_charts")
 
 # Qlib bin 格式需要的字段
-INCLUDE_FIELDS = ["$open", "$close", "$high", "$low", "$volume", "$amount"]
+# 注意: Qlib FeatureD.feature() 会将 "$close" 转换为 "close" (去掉第一个 $)
+# 所以 bin 文件名应为 close.day.bin 而不是 $close.day.bin
+INCLUDE_FIELDS = ["open", "close", "high", "low", "volume", "amount"]
 
 # ============================================================
 # 命令行参数
@@ -193,8 +195,7 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
             df = read_and_normalize_csv(csv_path)
 
             # 检查必要列
-            raw_fields = [f.lstrip("$") for f in INCLUDE_FIELDS]
-            required = ["datetime"] + raw_fields
+            required = ["datetime"] + INCLUDE_FIELDS
             missing = [c for c in required if c not in df.columns]
             if missing:
                 logger.warning("文件 %s 缺少列: %s, 跳过", csv_path.name, missing)
@@ -204,6 +205,11 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
             # 去除空值行
             df = df.dropna(subset=["datetime"]).copy()
             df = df.sort_values("datetime").reset_index(drop=True)
+
+            # 过滤数据太少的股票（Qlib Alpha158 需要 >= 500 个交易日）
+            if len(df) < 500:
+                logger.debug("跳过 %s: 仅有 %d 行数据 (< 500)", code, len(df))
+                continue
 
             # 收集日期
             for dt in df["datetime"]:
@@ -227,6 +233,13 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
     logger.info("交易日范围: %s ~ %s, 共 %d 个交易日",
                 all_dates[0], all_dates[-1], len(all_dates))
 
+    # 清空 features 目录，避免残留旧格式的 bin 文件
+    if features_dir.exists():
+        import shutil
+        shutil.rmtree(features_dir)
+        logger.info("已清空旧 features 目录: %s", features_dir)
+    features_dir.mkdir(parents=True, exist_ok=True)
+
     # 写入 bin 文件
     logger.info("开始写入 bin 文件...")
     for code, df in all_data.items():
@@ -239,20 +252,33 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
             dt_str = pd.Timestamp(row["datetime"]).strftime("%Y-%m-%d")
             date_value_map[dt_str] = row
 
+        # 找到该股票在日历中第一个有数据的日期索引
+        sorted_data_dates = sorted(
+            dt_str for dt_str in date_value_map if dt_str in date_index
+        )
+        if not sorted_data_dates:
+            logger.warning("股票 %s 没有在日历范围内有效日期的数据, 跳过", code)
+            continue
+        first_date_idx = date_index[sorted_data_dates[0]]
+
         # 写入每个特征文件
         for field in INCLUDE_FIELDS:
-            raw_field = field.lstrip("$")  # 去掉 $ 前缀匹配 DataFrame 列名
             bin_path = stock_dir / f"{field}.day.bin"
 
             # 创建完整日期数组，缺失日期用 NaN 填充
             values = np.full(len(all_dates), np.nan, dtype=np.float32)
             for dt_str, idx in date_index.items():
                 if dt_str in date_value_map:
-                    values[idx] = float(date_value_map[dt_str][raw_field])
+                    val = date_value_map[dt_str][field]
+                    if pd.notna(val):
+                        values[idx] = float(val)
 
-            # 写入二进制文件
+            # 写入二进制文件: Qlib FileStorage 格式为
+            # [start_index(float32), value_0(float32), value_1(float32), ...]
+            # start_index 是该股票第一个有数据在日历中的索引位置
+            bin_data = np.hstack([first_date_idx, values]).astype("<f")
             with open(bin_path, "wb") as f:
-                f.write(values.tobytes())
+                bin_data.tofile(f)
 
     logger.info("bin 文件写入完成: %d 只股票, %d 个特征", len(all_data), len(INCLUDE_FIELDS))
 
@@ -266,33 +292,41 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
     # 写入 instruments 文件
     codes_list = sorted(all_data.keys())
 
-    # all.txt: 包含全部股票
+    # all.txt: 包含全部股票 (Qlib 格式: instrument\tstart_datetime\tend_datetime)
     all_instruments_path = instruments_dir / "all.txt"
     with open(all_instruments_path, "w", encoding="utf-8") as f:
         for code in codes_list:
-            f.write(f"{code}\n")
+            start_date = all_dates[0]
+            end_date = all_dates[-1]
+            if code in all_data:
+                earliest = all_data[code]["datetime"].min()
+                latest = all_data[code]["datetime"].max()
+                start_date = pd.Timestamp(earliest).strftime("%Y-%m-%d")
+                end_date = pd.Timestamp(latest).strftime("%Y-%m-%d")
+            f.write(f"{code}\t{start_date}\t{end_date}\n")
     logger.info("全量股票列表已写入: %s (%d 只)", all_instruments_path, len(codes_list))
 
     # csi300.txt: 由于我们无法确定精确的 CSI300 成分股,
     # 创建一个包含所有股票的 instruments 文件作为替代
     # 用户可以后续替换为真实的 CSI300 列表
+    # Qlib 格式: instrument\tstart_datetime\tend_datetime (tab 分隔, 无 @type 头)
     csi300_path = instruments_dir / "csi300.txt"
     with open(csi300_path, "w", encoding="utf-8") as f:
-        f.write("@type=stock\n")
         for code in codes_list:
-            start_date = "2008-01-01"
-            # 尝试获取该股票最早的日期作为起始日期
+            start_date = all_dates[0]
+            end_date = all_dates[-1]
             if code in all_data:
                 earliest = all_data[code]["datetime"].min()
+                latest = all_data[code]["datetime"].max()
                 start_date = pd.Timestamp(earliest).strftime("%Y-%m-%d")
-            f.write(f"{code}\t{start_date}\t\tS\n")
+                end_date = pd.Timestamp(latest).strftime("%Y-%m-%d")
+            f.write(f"{code}\t{start_date}\t{end_date}\n")
     logger.info("CSI300 instruments 已写入: %s", csi300_path)
 
     # 写入 st marking（用于标记 ST 股票，这里全部标记为正常）
     st_path = instruments_dir / "st.txt"
     with open(st_path, "w", encoding="utf-8") as f:
-        f.write("@type=stock\n")
-        # 空文件，没有 ST 标记
+        pass  # 空文件，没有 ST 标记
     logger.info("ST 标记文件已写入: %s", st_path)
 
     # 汇总输出 Qlib 目录结构信息
@@ -358,8 +392,16 @@ def run_qlib_workflow(provider_uri: str, chart_dir: Path):
 
     # ---- 初始化 Qlib ----
     logger.info("初始化 Qlib, 数据路径: %s", provider_uri)
+    # 修复 numpy 2.x 兼容性：设置 qlib 为单线程，避免 joblib 子进程中 np.isclose 报错
+    os.environ["NUMEXPR_MAX_THREADS"] = "1"
+    os.environ["OMP_NUM_THREADS"] = "1"
     qlib.init(provider_uri=provider_uri, region=REG_CN)
-    logger.info("Qlib 初始化成功")
+    # 强制 qlib 使用单线程
+    import qlib
+    from qlib.config import C
+    C.joblib_backend = "threading"
+    C.maxtasksperchild = None
+    logger.info("Qlib 初始化成功 (单线程模式)")
 
     # ---- 工作流配置 ----
     market = "csi300"
