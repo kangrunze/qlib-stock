@@ -69,6 +69,12 @@ catboost_info/
 # data/
 # *.csv
 
+# Compressed archives
+*.tar.gz
+*.zip
+*.7z
+*.rar
+
 # Qlib converted data (large binary files)
 qlib_data/
 mlruns/
