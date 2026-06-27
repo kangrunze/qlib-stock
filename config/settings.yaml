@@ -1,0 +1,82 @@
+# ===== 全局路径配置 =====
+paths:
+  base_dir: "d:/project/qlib-stock/stock-ai"
+  data_dir: "d:/project/qlib-stock/stock-ai/data"
+  model_dir: "d:/project/qlib-stock/stock-ai/models"
+  output_dir: "d:/project/qlib-stock/stock-ai/output"
+  log_dir: "d:/project/qlib-stock/stock-ai/output/logs"
+  parquet_dir: "d:/project/qlib-stock/stock-ai/data/daily"
+  features_dir: "d:/project/qlib-stock/stock-ai/data/features"
+  index_dir: "d:/project/qlib-stock/stock-ai/data/index"
+  industry_dir: "d:/project/qlib-stock/stock-ai/data/industry"
+  financial_dir: "d:/project/qlib-stock/stock-ai/data/financial"
+  reference_dir: "d:/project/qlib-stock/stock-ai/data/reference"
+
+# ===== 数据源配置 =====
+data_source:
+  primary: "csv"               # csv / akshare / baostock
+  csv_dir: "D:/data"           # 自有 CSV 数据目录
+  backup: "baostock"
+  start_date: "2005-01-01"
+  max_workers: 10             # 多线程下载并发数
+  retry_max: 3
+  retry_delay: 2              # 秒
+  incremental_window: 30      # 增量更新覆盖最近N天（应对复权修正）
+
+# ===== 选股池配置 =====
+stock_universe:
+  # 排除板块
+  exclude_boards: ["北交所"]
+  # 过滤条件
+  min_listed_days: 250        # 上市至少250个交易日
+  exclude_st: true             # 排除ST
+  exclude_suspended: true      # 排除停牌
+
+# ===== 数据集划分配置 =====
+dataset_split:
+  train_start: "2013-01-01"
+  train_end: "2021-06-30"
+  valid_start: "2021-07-01"
+  valid_end: "2022-12-31"
+  test_start: "2023-01-01"
+  test_end: "2023-12-31"
+  backtest_start: "2024-01-01"
+  backtest_end: "2025-06-30"
+
+# ===== 特征工程配置 =====
+features:
+  enabled_categories:
+    - "trend"           # 趋势类：MA/EMA/MACD/ADX/CCI等
+    - "momentum"        # 动量类：RSI/KDJ/WR/MOM/收益率
+    - "volatility"      # 波动类：ATR/STD/BB_width/历史波动率
+    - "volume_price"    # 量价类：OBV/MFI/VWAP/换手率
+    - "statistical"     # 统计类：Skew/Kurt/Beta/Alpha/Sharpe
+    - "cross_section"   # 横截面：全市场排名分位数
+  ic_threshold: 0.02
+  corr_threshold: 0.95
+
+# ===== Label配置 =====
+labels:
+  types:
+    - name: "ret_20d"
+      horizon: 20
+      description: "未来20日收益率（月度调仓）"
+    - name: "ret_60d"
+      horizon: 60
+      description: "未来60日收益率（季度调仓）"
+    - name: "alpha_20d"
+      horizon: 20
+      benchmark: "000905"
+      description: "20日超额收益vs中证500"
+    - name: "alpha_60d"
+      horizon: 60
+      benchmark: "000905"
+      description: "60日超额收益vs中证500"
+  primary: "alpha_20d"
+
+# ===== 模型配置 =====
+model:
+  types: ["lightgbm", "xgboost", "catboost"]
+  ensemble_weights: [0.5, 0.3, 0.2]
+  early_stopping_rounds: 50
+  enable_optuna: true
