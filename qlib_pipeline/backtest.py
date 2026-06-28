@@ -293,3 +293,126 @@ def print_summary(report_normal_df, analysis_df):
                         print(f"  {col}: {val:.4f}")
     except Exception as e:
         logger.error("打印摘要失败: %s", e)
+
+
+def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
+                      output_dir: str = "output/picks"):
+    """
+    从 Qlib 预测结果中提取 Top-K 选股推荐并打印和保存。
+    
+    pred_df 结构（Qlib SignalRecord 输出）:
+        MultiIndex: (datetime, instrument)
+        Column: score
+    
+    Args:
+        pred_df: 预测 DataFrame（来自 recorder.load_object("pred.pkl")）
+        top_k: 选股数量
+        date: 指定日期（None=取最新交易日）
+        output_dir: CSV 输出目录
+    
+    Returns:
+        DataFrame[stock_code, score, rank, date]
+    """
+    if pred_df is None or pred_df.empty:
+        logger.warning("无预测数据，无法生成选股推荐")
+        return None
+
+    try:
+        # 确定目标日期
+        dates = pred_df.index.get_level_values(0).unique()
+        if date:
+            target_date = pd.Timestamp(date)
+            if target_date not in dates:
+                logger.warning("日期 %s 不在预测范围内，使用最新日期", date)
+                target_date = dates[-1]
+        else:
+            target_date = dates[-1]
+
+        # 提取当日预测
+        daily_pred = pred_df.loc[target_date]
+        if isinstance(daily_pred, pd.Series):
+            daily_pred = daily_pred.to_frame("score")
+
+        # 转换为 stock_code + score
+        picks = daily_pred.reset_index()
+        # instrument 列名可能是 'instrument' 或直接是 level 名
+        inst_col = picks.columns[0]
+        picks = picks.rename(columns={inst_col: "stock_code"})
+
+        # 确保有 score 列
+        if "score" not in picks.columns:
+            picks["score"] = picks.iloc[:, 1] if picks.shape[1] > 1 else 0
+
+        # 降序排序，取 Top-K
+        picks = picks.dropna(subset=["score"])
+        picks = picks.sort_values("score", ascending=False).head(top_k).reset_index(drop=True)
+        picks["rank"] = range(1, len(picks) + 1)
+        picks["date"] = target_date.strftime("%Y-%m-%d")
+
+        # 清理股票代码格式（去掉 SH/SZ 前缀，统一为 6 位数字）
+        picks["stock_code"] = picks["stock_code"].astype(str).str.replace(r'^SH|^SZ', '', regex=True)
+        picks["stock_code"] = picks["stock_code"].str.zfill(6)
+
+        # 打印选股推荐
+        print("\n" + "=" * 70)
+        print(f"  Top-{top_k} 选股推荐  [{target_date.strftime('%Y-%m-%d')}]")
+        print("=" * 70)
+        print(f"{'排名':<6}{'股票代码':<12}{'预测得分':>10}{'信号强度':>12}")
+        print("-" * 70)
+
+        for _, row in picks.iterrows():
+            score = row["score"]
+            # 信号强度分类
+            if score > 0.03:
+                strength = "★★★ 强"
+            elif score > 0.01:
+                strength = "★★☆ 中"
+            elif score > 0:
+                strength = "★☆☆ 弱"
+            else:
+                strength = "--- 负"
+            print(f"  #{int(row['rank']):<4d} {row['stock_code']:<10} {score:>10.6f} {strength:>12}")
+
+        print("-" * 70)
+        n_strong = (picks["score"] > 0.03).sum()
+        n_medium = ((picks["score"] > 0.01) & (picks["score"] <= 0.03)).sum()
+        n_weak = ((picks["score"] > 0) & (picks["score"] <= 0.01)).sum()
+        print(f"  强信号(>0.03): {n_strong}只 | 中信号(0.01~0.03): {n_medium}只 | 弱信号(0~0.01): {n_weak}只")
+        print(f"  平均得分: {picks['score'].mean():.6f} | 最高: {picks['score'].max():.6f} | 最低: {picks['score'].min():.6f}")
+        print("=" * 70)
+
+        # 保存 CSV
+        if output_dir:
+            out_path = Path(output_dir)
+            out_path.mkdir(parents=True, exist_ok=True)
+            csv_file = out_path / f"stock_picks_{target_date.strftime('%Y%m%d')}.csv"
+            picks.to_csv(csv_file, index=False, encoding="utf-8-sig")
+            logger.info("选股推荐已保存: %s", csv_file)
+
+        return picks
+
+    except Exception as e:
+        logger.error("生成选股推荐失败: %s", e)
+        return None
+
+
+def save_stock_picks_to_file(picks_df, output_dir: str = "output/picks", date_str: str = None):
+    """保存选股结果到 CSV 文件。"""
+    if picks_df is None or picks_df.empty:
+        return None
+
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    if date_str is None and "date" in picks_df.columns:
+        date_str = picks_df["date"].iloc[0]
+    if date_str is None:
+        from datetime import datetime
+        date_str = datetime.now().strftime("%Y%m%d")
+    else:
+        date_str = pd.Timestamp(date_str).strftime("%Y%m%d")
+
+    csv_file = out_path / f"stock_picks_{date_str}.csv"
+    picks_df.to_csv(csv_file, index=False, encoding="utf-8-sig")
+    logger.info("选股推荐已保存: %s", csv_file)
+    return str(csv_file)

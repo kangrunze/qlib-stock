@@ -1,80 +1,270 @@
 # -*- coding: utf-8 -*-
-# Qlib Pipeline 工作流配置
-# 支持 Alpha158 / Alpha360 切换，LightGBM 回归/排序，标准 train/valid/test 切分
+# =============================================================================
+# Qlib Pipeline 统一配置文件 — 整个项目唯一配置入口
+# =============================================================================
+# 修改此文件即可控制所有行为，无需修改 Python 代码。
+# 通过命令行参数可临时覆盖部分配置：
+#   python run.py full --handler Alpha360 --loss rank --topk 30
+# =============================================================================
+# 快速场景切换：
+#   日常快速训练:  handler=Alpha158, loss=mse, topk=50
+#   追求高 IC:     handler=Alpha360, loss=rank, topk=30
+#   稳健性验证:    handler=Alpha158, 然后运行 rolling/tscv/regime
+# =============================================================================
 
+# =============================================================================
+# 1. Qlib 引擎配置 — 数据位置和区域
+# =============================================================================
 qlib:
+  # Qlib bin 数据目录（由 python run.py data --convert 生成）
   provider_uri: "d:/project/qlib-stock/qlib_data/cn_data"
-  region: "cn"
+  region: "cn"                    # cn: A股沪深, us: 美股
 
-# 数据处理器配置 (Alpha158/Alpha360 共用)
-# 时间范围根据实际 Qlib 数据自动调整 (当前数据: 2020-01 ~ 2026-06)
+# =============================================================================
+# 2. 数据源配置 — 原始数据位置（CSV/Parquet 后端用）
+# =============================================================================
+data_source:
+  # 当前使用的数据格式: "csv" | "parquet" | "qlib"
+  #   csv: 从 csv_dir 读取 .csv 文件（自有数据推荐）
+  #   parquet: 从 parquet_dir 读取 .parquet（DuckDB 后端）
+  #   qlib: 从 qlib_dir 读取 Qlib bin 格式（训练最快）
+  data_format: "csv"
+  csv_dir: "D:/data"                                     # CSV 原始数据目录
+  parquet_dir: "d:/project/qlib-stock/stock-ai/data/daily"  # Parquet 数据目录
+  qlib_dir: "d:/project/qlib-stock/qlib_data/cn_data"       # Qlib bin 数据目录
+  start_date: "2005-01-01"                               # 最早可用数据日期
+  max_workers: 10                                        # 并发下载线程数（AKShare）
+  retry_max: 3                                           # 下载失败重试次数
+  retry_delay: 2                                         # 重试间隔（秒）
+
+# =============================================================================
+# 3. 选股池配置 — 哪些股票可以交易
+# =============================================================================
+stock_universe:
+  exclude_boards: ["北交所"]      # 排除的板块（北交所流动性差）
+  min_listed_days: 250            # 上市不足 250 天的不选（避免次新股噪声）
+  exclude_st: true                # 排除 ST 股票
+  exclude_suspended: true         # 排除停牌股票
+
+# =============================================================================
+# 4. DataHandler 配置 — 特征计算的时间范围和股票范围
+# =============================================================================
 data_handler:
-  start_time: "2020-01-01"
-  end_time: "2025-12-31"
-  fit_start_time: "2020-01-01"
-  fit_end_time: "2023-06-30"
+  # 数据起止时间（Qlib DataHandler 会加载此范围内的所有数据）
+  start_time: "2020-01-01"        # 数据起始日期
+  end_time: "2025-12-31"          # 数据结束日期
+  fit_start_time: "2020-01-01"    # 拟合起始（用于标准化等预处理）
+  fit_end_time: "2023-06-30"      # 拟合结束（不应包含验证/测试集）
+  # 股票池: csi300(沪深300) | csi500(中证500) | csi800(中证800) | all(全A股)
   instruments: "csi300"
 
-# 数据集配置
+# =============================================================================
+# 5. 数据集配置 — 训练/验证/测试三段式划分
+# =============================================================================
 dataset:
-  handler: "Alpha158"          # Alpha158 或 Alpha360，可通过 --handler 参数覆盖
+  # 特征处理器: Alpha158(158因子, 快) | Alpha360(360因子, 更全但更慢)
+  handler: "Alpha158"
+  # 时间段划分（三段式，纯时间序列，无随机打乱）
   segments:
-    train: ["2020-01-01", "2023-06-30"]
-    valid: ["2023-07-01", "2024-06-30"]
-    test:  ["2024-07-01", "2025-12-31"]
+    train: ["2020-01-01", "2023-06-30"]    # 训练集: 约3.5年
+    valid: ["2023-07-01", "2024-06-30"]    # 验证集: 约1年（用于早停）
+    test:  ["2024-07-01", "2025-12-31"]    # 测试集: 约1.5年（最终评估）
 
-# 模型配置
+# =============================================================================
+# 6. 模型配置 — 自研模型超参（train.py 旧管线使用）
+# =============================================================================
 model:
-  type: "lgb"                  # lgb 或 xgb
-  lgb:
-    class: "LGBModel"
-    module_path: "qlib.contrib.model.gbdt"
-    kwargs:
-      loss: "mse"              # mse(回归) 或 rank(排序)
-      colsample_bytree: 0.8879
-      learning_rate: 0.0421
-      subsample: 0.8789
-      lambda_l1: 205.6999
-      lambda_l2: 580.9768
-      max_depth: 8
-      num_leaves: 210
-      num_threads: 20
-  xgb:
-    class: "XGBModel"
-    module_path: "qlib.contrib.model.gbdt"
-    kwargs:
-      loss: "mse"
-      colsample_bytree: 0.8879
-      learning_rate: 0.0421
-      max_depth: 8
-      n_estimators: 1000
-      subsample: 0.8789
-      num_threads: 20
+  type: "lgb"                  # 当前模型类型: lgb | xgb | cat | ensemble
+  # --- LightGBM ---
+  lightgbm:
+    objective: "regression"    # 回归任务
+    metric: "rmse"             # 评估指标
+    boosting_type: "gbdt"      # 提升类型: gbdt | dart | goss
+    num_leaves: 128            # 叶子节点数（越大越复杂，推荐 2^max_depth 左右）
+    max_depth: 10              # 树深度（限制过拟合，5~12）
+    learning_rate: 0.05        # 学习率（0.01~0.1，越小越慢但可能更稳定）
+    n_estimators: 1000         # 最大迭代轮数
+    subsample: 0.8             # 样本采样比例（0.7~0.9，防过拟合）
+    colsample_bytree: 0.8      # 特征采样比例（0.7~0.9）
+    reg_alpha: 0.1             # L1 正则化（0~1）
+    reg_lambda: 0.1            # L2 正则化（0~1）
+    min_child_samples: 20      # 叶节点最小样本数（越大越防过拟合）
+    random_state: 42           # 随机种子
+    n_jobs: -1                 # 并行线程数（-1=全部）
+    verbosity: -1              # 日志级别（-1=静默）
+    early_stopping_rounds: 50  # 早停轮数（验证集50轮不提升则停止）
+  # --- XGBoost ---
+  xgboost:
+    objective: "reg:squarederror"
+    eval_metric: "rmse"
+    max_depth: 8
+    learning_rate: 0.05
+    n_estimators: 1000
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 0.1
+    random_state: 42
+    n_jobs: -1
+    verbosity: 0
+    early_stopping_rounds: 50
+  # --- CatBoost ---
+  catboost:
+    loss_function: "RMSE"
+    eval_metric: "RMSE"
+    iterations: 1000
+    learning_rate: 0.05
+    depth: 8
+    l2_leaf_reg: 3.0
+    random_seed: 42
+    thread_count: -1
+    verbose: 0
+    early_stopping_rounds: 50
+  # --- Ensemble ---
+  ensemble:
+    weights: [0.5, 0.3, 0.2]   # LGB:XGB:Cat 权重
 
-# 回测配置
+# =============================================================================
+# 7. Qlib 原生 LGB 配置 — 用于 Qlib Workflow 训练（run.py 实际使用）
+# =============================================================================
+# 这是 Qlib 官方 LGBModel 的参数，通过 qlib.contrib.model.gbdt 加载。
+# 与上方 lightgbm 配置的区别：这是 Qlib 封装版，支持更多 Qlib 内置功能。
+qlib_lgb:
+  class: "LGBModel"
+  module_path: "qlib.contrib.model.gbdt"
+  kwargs:
+    loss: "mse"                # 损失函数: mse(回归) | rank(排序，选股推荐)
+    colsample_bytree: 0.8879   # 特征采样（经 Optuna 调优）
+    learning_rate: 0.0421      # 学习率（经 Optuna 调优）
+    subsample: 0.8789          # 样本采样（经 Optuna 调优）
+    lambda_l1: 205.6999        # L1 正则化系数
+    lambda_l2: 580.9768        # L2 正则化系数
+    max_depth: 8               # 最大深度
+    num_leaves: 210            # 叶子数（=2^8 左右 * 经验系数）
+    num_threads: 20            # 线程数
+
+# =============================================================================
+# 8. Optuna 超参搜索 — 自动调参配置
+# =============================================================================
+optuna:
+  n_trials: 50                 # 搜索试验次数（越多越精确但越慢）
+  cv_folds: 5                  # 交叉验证折数
+  direction: "maximize"        # 优化方向: maximize(RankIC) | minimize(mse)
+  timeout: 3600                # 超时时间（秒），1小时
+
+# =============================================================================
+# 9. SHAP 可解释性 — 特征重要性分析
+# =============================================================================
+shap:
+  max_display: 20              # 最多展示的特征数
+  sample_size: 1000            # SHAP 计算采样数（大数据集降低计算量）
+
+# =============================================================================
+# 10. 策略配置 — 选股和调仓规则
+# =============================================================================
+strategy:
+  class: "TopkDropoutStrategy"
+  module_path: "qlib.contrib.strategy.signal_strategy"
+  kwargs:
+    topk: 50                   # 持仓股票数（Top-K 选股）
+    n_drop: 5                  # 每次调仓替换的股票数
+  # 自定义策略参数（独立于 Qlib 策略）
+  rebalance_freq: "monthly"    # 调仓频率: daily | weekly | monthly | quarterly
+  weight_method: "equal"       # 权重分配: equal(等权) | score_weighted(得分加权)
+  industry_neutral: false      # 是否行业中性化（true=每个行业最多 max_stocks_per_industry 只）
+  max_stocks_per_industry: 5   # 行业中性化时每行业最大持仓数
+
+# =============================================================================
+# 11. 风险控制 — 仓位和风控参数
+# =============================================================================
+risk:
+  max_position_pct: 0.10       # 单只股票最大仓位（10%）
+  max_industry_pct: 0.30       # 单个行业最大仓位（30%）
+  stop_loss_pct: 0.08          # 止损线（8%亏损即止损）
+
+# =============================================================================
+# 12. 回测配置 — 模拟交易参数
+# =============================================================================
 backtest:
+  # 执行器配置
   executor:
     class: "SimulatorExecutor"
     module_path: "qlib.backtest.executor"
     kwargs:
-      time_per_step: "day"
-      generate_portfolio_metrics: true
+      time_per_step: "day"                 # 执行频率: day
+      generate_portfolio_metrics: true     # 是否生成组合指标
+  # 策略配置（回测时使用）
   strategy:
     class: "TopkDropoutStrategy"
     module_path: "qlib.contrib.strategy.signal_strategy"
     kwargs:
-      topk: 50
-      n_drop: 5
-  # PortAnaRecord 要求的嵌套结构
+      topk: 50                             # 选股数量
+      n_drop: 5                            # 每期替换数
+  # 回测参数（PortAnaRecord 嵌套结构）
   backtest:
-    start_time: "2024-07-01"
-    end_time: "2025-12-31"
-    account: 100000000
-    benchmark: "600000"   # 当前数据中无指数数据，使用 600000 作为占位基准；实际生产建议下载 SH000300 指数数据
+    start_time: "2024-07-01"               # 回测起始日期
+    end_time: "2025-12-31"                 # 回测结束日期
+    account: 100000000                     # 初始资金（1亿）
+    benchmark: "600000"                    # 基准指数（浦发银行，可用 000300/000905）
     exchange_kwargs:
-      freq: "day"
-      limit_threshold: 0.095
-      deal_price: "close"
-      open_cost: 0.0005
-      close_cost: 0.0015
-      min_cost: 5
+      freq: "day"                          # 交易频率
+      limit_threshold: 0.095               # 涨跌停阈值（9.5%）
+      deal_price: "close"                  # 成交价格: close | vwap | open
+      open_cost: 0.0005                    # 开仓手续费（0.05%）
+      close_cost: 0.0015                   # 平仓手续费（0.15%，含印花税）
+      min_cost: 5                          # 最低佣金（5元）
+
+# =============================================================================
+# 13. 实验配置 — MLflow 追踪和实验管理
+# =============================================================================
+experiment:
+  name: "qlib_pipeline"         # 实验名称（MLflow experiment）
+  mlflow_tracking_uri: "mlruns/"  # MLflow 追踪 URI
+  log_artifacts: true           # 是否记录 artifacts（模型/图表）
+  random_seed: 42               # 全局随机种子
+
+# =============================================================================
+# 14. 训练配置 — 自研管线训练参数
+# =============================================================================
+training:
+  test_size: 0.2                # 测试集比例
+  validation_size: 0.2          # 验证集比例（从训练集中划分）
+  shuffle: false                # 是否打乱（金融时序数据必须为 false）
+  random_state: 42
+
+# =============================================================================
+# 15. 模型注册中心 — 模型版本管理
+# =============================================================================
+registry:
+  storage_path: "models/"               # 模型存储根目录
+  metadata_filename: "meta.json"        # 元数据文件名
+  model_filename: "model.pkl"           # 模型文件名
+
+# =============================================================================
+# 16. 特征工程配置 — 自定义因子（Alpha158 之外的补充因子）
+# =============================================================================
+# 注意：技术指标、Alpha 因子、横截面因子已由 Qlib Alpha158/Alpha360 原生覆盖，
+# 这里只配置 Alpha158 无法覆盖的自定义因子类别。
+features:
+  enabled_categories:
+    - "fundamental"       # 基本面代理变量（PE/PB/ROE 代理）
+    - "fund_flow"         # 资金流（占位，待数据源就绪）
+    - "industry"          # 行业因子（占位，待数据源就绪）
+    - "news"              # 新闻情绪（占位，待 NLP 模型就绪）
+    - "announcements"     # 公告事件（占位，待数据源就绪）
+    - "alternative"       # 另类数据（占位，待数据源就绪）
+  ic_threshold: 0.02      # IC 阈值：|IC| < 0.02 的因子被过滤
+  corr_threshold: 0.95    # 相关性阈值：相关系数 > 0.95 的因子只保留一个
+
+# =============================================================================
+# 17. Label 配置 — 预测目标定义
+# =============================================================================
+labels:
+  types:
+    - name: "ret_20d"
+      horizon: 20
+      description: "未来20日收益率（月度选股推荐）"
+    - name: "ret_60d"
+      horizon: 60
+      description: "未来60日收益率（季度选股推荐）"
+  primary: "ret_20d"       # 主 Label（默认使用）

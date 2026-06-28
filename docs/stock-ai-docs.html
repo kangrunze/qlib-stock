@@ -379,27 +379,29 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
     <li><a href="#architecture" class="toc-h2">2. 系统架构</a></li>
     <li><a href="#install" class="toc-h2">3. 环境安装</a></li>
     <li><a href="#config" class="toc-h2">4. 配置文件详解</a></li>
-    <li><a href="#config-settings" class="toc-h3">4.1 settings.yaml</a></li>
-    <li><a href="#config-model" class="toc-h3">4.2 model_config.yaml</a></li>
-    <li><a href="#config-universe" class="toc-h3">4.3 stock_universe.yaml</a></li>
+    <li><a href="#config-workflow" class="toc-h3">4.1 workflow_config.yaml 核心</a></li>
+    <li><a href="#config-settings" class="toc-h3">4.2 settings.yaml 全局</a></li>
+    <li><a href="#config-model" class="toc-h3">4.3 model_config.yaml</a></li>
+    <li><a href="#config-universe" class="toc-h3">4.4 stock_universe.yaml</a></li>
     <li><a href="#modules" class="toc-h2">5. 模块详解</a></li>
     <li><a href="#module-data" class="toc-h3">5.1 数据中心</a></li>
-    <li><a href="#module-feature" class="toc-h3">5.2 特征工程</a></li>
-    <li><a href="#module-dataset" class="toc-h3">5.3 数据集</a></li>
-    <li><a href="#module-model" class="toc-h3">5.4 模型平台</a></li>
-    <li><a href="#module-strategy" class="toc-h3">5.5 策略回测</a></li>
+    <li><a href="#module-feature" class="toc-h3">5.2 特征工程（精简）</a></li>
+    <li><a href="#module-qlib-pipeline" class="toc-h3">5.3 Qlib Pipeline 核心</a></li>
+    <li><a href="#module-robustness" class="toc-h3">5.4 稳健性工具</a></li>
+    <li><a href="#module-model" class="toc-h3">5.5 模型平台</a></li>
     <li><a href="#usage" class="toc-h2">6. 使用指南</a></li>
-    <li><a href="#usage-train" class="toc-h3">6.1 训练模型</a></li>
-    <li><a href="#usage-daily" class="toc-h3">6.2 每日选股</a></li>
-    <li><a href="#usage-backtest" class="toc-h3">6.3 回测验证</a></li>
+    <li><a href="#usage-core" class="toc-h3">6.1 核心流程</a></li>
+    <li><a href="#usage-robustness" class="toc-h3">6.2 稳健性验证</a></li>
+    <li><a href="#usage-data" class="toc-h3">6.3 数据管理</a></li>
+    <li><a href="#usage-params" class="toc-h3">6.4 参数覆盖</a></li>
+    <li><a href="#usage-pick" class="toc-h3">6.5 选股推荐</a></li>
     <li><a href="#tuning" class="toc-h2">7. 参数调优指南</a></li>
     <li><a href="#tuning-model" class="toc-h3">7.1 模型参数</a></li>
     <li><a href="#tuning-features" class="toc-h3">7.2 特征参数</a></li>
     <li><a href="#tuning-strategy" class="toc-h3">7.3 策略参数</a></li>
-    <li><a href="#csv-loader" class="toc-h2">6.1 CSV 数据源</a></li>
-    <li><a href="#charts" class="toc-h2">9. 图形报表</a></li>
-    <li><a href="#faq" class="toc-h2">10. 常见问题</a></li>
-    <li><a href="#known-issues" class="toc-h3">10.9 Qlib 兼容性</a></li>
+    <li><a href="#charts" class="toc-h2">8. 图形报表</a></li>
+    <li><a href="#faq" class="toc-h2">9. 常见问题</a></li>
+    <li><a href="factor-model-guide/factor-model-guide.html" class="toc-h2" target="_blank">📖 因子与模型说明 →</a></li>
   </ul>
 </nav>
 
@@ -409,36 +411,37 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
 <!-- Cover -->
 <div class="cover">
   <h1>A股中长线AI量化选股系统</h1>
-  <p class="subtitle">技术文档与使用手册</p>
+  <p class="subtitle">基于 Qlib Alpha158 标准数据链 + LightGBM 多因子选股平台</p>
   <div class="meta">
-    <div class="meta-item"><strong>版本</strong> v1.0</div>
+    <div class="meta-item"><strong>版本</strong> v2.1</div>
     <div class="meta-item"><strong>Python</strong> 3.10+</div>
-    <div class="meta-item"><strong>日期</strong> 2026-06-27</div>
+    <div class="meta-item"><strong>日期</strong> 2026-06-28</div>
+    <div class="meta-item"><strong>管线</strong> Qlib Native</div>
   </div>
 </div>
 
 <!-- Chapter 1: Overview -->
 <h2 id="overview">1. 项目概述</h2>
 
-<p>本项目是一个基于 <mark class="key">AKShare</mark> 数据源、<mark class="key">LightGBM/XGBoost/CatBoost</mark> 集成模型的 A 股中长线 AI 量化选股系统。系统覆盖数据获取、特征工程、模型训练、策略选股、回测验证到每日自动化运行的完整量化交易流水线。</p>
+<p>本项目是一个基于 <mark class="key">Qlib Alpha158</mark> 标准数据链、<mark class="key">LightGBM</mark> 模型的 A 股中长线 AI 量化选股系统。系统采用 <strong>Qlib Native Pipeline</strong> 架构，数据层保留 AKShare + Parquet + CSV 多后端，特征工程由 Qlib Alpha158/Alpha360 驱动，模型使用 LightGBM 回归/排序，回测基于 Qlib SimulatorExecutor + PortAnaRecord，稳健性验证覆盖滚动训练、漂移检测、TSCV 等全维度。</p>
 
 <div class="metric-grid">
-  <div class="metric-card"><div class="value">128+</div><div class="label">技术因子数量</div></div>
-  <div class="metric-card"><div class="value">3</div><div class="label">集成模型</div></div>
-  <div class="metric-card"><div class="value">71</div><div class="label">技术指标</div></div>
-  <div class="metric-card"><div class="value">28</div><div class="label">横截面因子</div></div>
-  <div class="metric-card"><div class="value">5</div><div class="label">架构阶段</div></div>
-  <div class="metric-card"><div class="value">52</div><div class="label">源码文件</div></div>
+  <div class="metric-card"><div class="value">158</div><div class="label">Alpha158 因子</div></div>
+  <div class="metric-card"><div class="value">3</div><div class="label">数据后端</div></div>
+  <div class="metric-card"><div class="value">96</div><div class="label">股票池</div></div>
+  <div class="metric-card"><div class="value">6</div><div class="label">稳健性工具</div></div>
+  <div class="metric-card"><div class="value">5</div><div class="label">Phases 完成</div></div>
+  <div class="metric-card"><div class="value">50+</div><div class="label">源码文件</div></div>
 </div>
 
 <h3>核心特性</h3>
 <ul>
-  <li><strong>数据层</strong>：AKShare 实时 A 股数据，Parquet 本地存储，DuckDB 高效查询</li>
-  <li><strong>特征层</strong>：趋势/动量/波动/量价/统计/横截面 6 大类 128+ 因子</li>
-  <li><strong>模型层</strong>：LightGBM + XGBoost + CatBoost 加权集成，Optuna 自动调参</li>
-  <li><strong>策略层</strong>：TopK 选股 + 行业中性化 + 等权/得分加权/风险平价配置</li>
-  <li><strong>回测层</strong>：真实 A 股约束（涨跌停、停牌、手续费、滑点）</li>
-  <li><strong>调度层</strong>：每日收盘后自动运行，输出选股清单</li>
+  <li><strong>数据层</strong>：AKShare 实时 A 股数据，Parquet/CSV/QLib 三后端，DataStore 统一接口</li>
+  <li><strong>特征层</strong>：Qlib Alpha158/Alpha360 覆盖 158+ 标准因子，自定义因子仅保留基本面/资金流/行业/另类数据</li>
+  <li><strong>管线层</strong>：Qlib 标准 Workflow — DatasetH → LGBModel → SignalRecord → PortAnaRecord → TopkDropoutStrategy</li>
+  <li><strong>稳健性</strong>：滚动 Walk-Forward / PSI 漂移检测 / ICIR / IC 衰减 / 分层 IC / Purged K-Fold TSCV / 市场阶段分析 / 超参数敏感性</li>
+  <li><strong>模型层</strong>：LightGBM 回归/排序，Optuna 调参，SHAP 可解释性</li>
+  <li><strong>统一入口</strong>：<code>run.py</code> 单一入口管理所有流程（训练/回测/数据/稳健性验证），配置即代码</li>
 </ul>
 
 <h3>项目结构</h3>
@@ -448,25 +451,34 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
     settings.yaml           <span class="comment"># 全局配置</span>
     model_config.yaml       <span class="comment"># 模型超参</span>
     stock_universe.yaml     <span class="comment"># 选股池</span>
-  <span class="dir">data_center/</span>         <span class="comment"># Phase 1: 数据中心</span>
+  <span class="dir">data_center/</span>         <span class="comment"># 数据中心</span>
     akshare_client.py       <span class="comment"># AKShare API 封装</span>
-    csv_loader.py           <span class="comment"># CSV 数据加载器（新增）</span>
     download_history.py     <span class="comment"># 全量历史数据下载</span>
+    data_store.py           <span class="comment"># DataStore 多后端工厂</span>
     daily_update.py         <span class="comment"># 日度增量更新</span>
     data_validator.py       <span class="comment"># 数据质量校验</span>
-    duckdb_store.py         <span class="comment"># DuckDB 查询接口</span>
-  <span class="dir">feature_engine/</span>      <span class="comment"># Phase 2: 特征工程</span>
-    technical.py            <span class="comment"># 71 个技术指标</span>
-    cross_section.py        <span class="comment"># 28 个横截面因子</span>
-    alpha_factors.py        <span class="comment"># 19 个 Alpha 因子</span>
-    fundamental.py          <span class="comment"># 10 个基本面因子</span>
+  <span class="dir">qlib_pipeline/</span>       <span class="comment"># Qlib 核心管线</span>
+    workflow_config.yaml    <span class="comment"># 统一配置（唯一入口）</span>
+    dataset.py              <span class="comment"># DatasetH 构建</span>
+    train.py                <span class="comment"># 标准 Workflow 训练</span>
+    backtest.py             <span class="comment"># 回测 + Plotly 图表</span>
+    model.py                <span class="comment"># 模型配置适配层</span>
+    numpy_compat.py         <span class="comment"># NumPy 2.x 兼容补丁</span>
+    rolling.py              <span class="comment"># 滚动 Walk-Forward 验证</span>
+    drift.py                <span class="comment"># PSI/概念漂移检测</span>
+    ic_stability.py         <span class="comment"># ICIR/IC衰减/分层IC</span>
+    tscv.py                 <span class="comment"># Purged K-Fold TSCV</span>
+    regime.py               <span class="comment"># 市场阶段 + 关键年份回测</span>
+    sensitivity.py          <span class="comment"># 超参数敏感性分析</span>
+  <span class="dir">feature_engine/</span>      <span class="comment"># 自定义因子（精简）</span>
+    fundamental.py          <span class="comment"># 基本面代理变量</span>
+    fund_flow.py            <span class="comment"># 资金流因子（占位）</span>
+    industry.py             <span class="comment"># 行业因子（占位）</span>
+    news.py                 <span class="comment"># 新闻情绪（占位）</span>
+    announcements.py        <span class="comment"># 公告事件（占位）</span>
+    alternative_data.py     <span class="comment"># 另类数据（占位）</span>
     factor_store.py         <span class="comment"># 因子存储管理</span>
-  <span class="dir">dataset/</span>             <span class="comment"># 数据集构建</span>
-    label_generator.py      <span class="comment"># Label 生成</span>
-    time_splitter.py        <span class="comment"># 时间序列划分</span>
-    data_cleaner.py         <span class="comment"># 数据清洗</span>
-    qlib_converter.py       <span class="comment"># Qlib 格式转换</span>
-  <span class="dir">model/</span>               <span class="comment"># Phase 3: 模型平台</span>
+  <span class="dir">model/</span>               <span class="comment"># 模型平台</span>
     lgb_model.py            <span class="comment"># LightGBM</span>
     xgb_model.py            <span class="comment"># XGBoost</span>
     cat_model.py            <span class="comment"># CatBoost</span>
@@ -474,63 +486,63 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
     optuna_tuner.py         <span class="comment"># 自动调参</span>
     shap_analysis.py        <span class="comment"># 特征重要性</span>
     model_registry.py       <span class="comment"># 模型版本管理</span>
-  <span class="dir">strategy/</span>            <span class="comment"># Phase 4: 策略层</span>
-    topk_selector.py        <span class="comment"># TopK 选股</span>
-    weight_allocator.py     <span class="comment"># 权重分配</span>
-    risk_constraints.py     <span class="comment"># 风控约束</span>
-  <span class="dir">backtest/</span>            <span class="comment"># 回测引擎</span>
-    backtest_engine.py      <span class="comment"># 核心回测</span>
-    realistic_constraints.py <span class="comment"># 真实交易约束</span>
-    performance_report.py   <span class="comment"># 绩效报告</span>
-    benchmark_loader.py     <span class="comment"># 基准加载</span>
+  <span class="dir">strategy/</span> + <span class="dir">backtest/</span>    <span class="comment"># 策略 + 回测 (Qlib 已替代)</span>
   <span class="dir">evaluate/</span>            <span class="comment"># 评估分析</span>
-    ic_analysis.py          <span class="comment"># IC/RankIC</span>
-    sharpe_analysis.py      <span class="comment"># 风险指标</span>
-    drawdown_analysis.py    <span class="comment"># 回撤分析</span>
-    visualization.py        <span class="comment"># 可视化</span>
-  <span class="dir">scheduler/</span>           <span class="comment"># Phase 5: 自动化</span>
-    daily_pipeline.py       <span class="comment"># 每日流水线</span>
-    model_roll.py           <span class="comment"># 模型滚动更新</span>
-    notification.py         <span class="comment"># 通知日志</span>
-  train.py                 <span class="comment"># 训练入口</span>
-  daily_run.py             <span class="comment"># 每日运行入口</span>
-  generate_charts.py       <span class="comment"># 图形报表生成（新增）</span>
-  run_qlib_workflow.py     <span class="comment"># Qlib 数据转换 + workflow（新增）</span>
+  <span class="dir">scheduler/</span>           <span class="comment"># 自动化调度</span>
+  run.py                   <span class="comment"># 统一入口（train/backtest/full/data/rolling/...）</span>
   requirements.txt         <span class="comment"># Python 依赖</span>
 </div>
 
 <!-- Chapter 2: Architecture -->
 <h2 id="architecture">2. 系统架构</h2>
 
-<p>系统采用五阶段流水线架构，从数据到策略输出形成闭环：</p>
+<p>系统采用 <strong>Qlib Native Pipeline</strong> 架构，以 Qlib 标准数据链为核心，自研模块作为补充：</p>
 
 <div class="arch-diagram">
   <div class="arch-row">
-    <span class="arch-box arch-phase1">Phase 1<br>数据中心</span>
+    <span class="arch-box arch-phase1">数据层<br>DataStore</span>
     <span class="arch-arrow">&#8594;</span>
-    <span class="arch-box arch-phase2">Phase 2<br>特征工程</span>
+    <span class="arch-box arch-phase2">特征层<br>Alpha158</span>
     <span class="arch-arrow">&#8594;</span>
-    <span class="arch-box arch-phase3">Phase 3<br>模型训练</span>
+    <span class="arch-box arch-phase3">管线层<br>DatasetH + LGBM</span>
     <span class="arch-arrow">&#8594;</span>
-    <span class="arch-box arch-phase4">Phase 4<br>策略回测</span>
+    <span class="arch-box arch-phase4">回测层<br>PortAnaRecord</span>
   </div>
   <div style="margin-top:1rem; color:var(--muted); font-size:0.85rem;">
-    AKShare/Parquet/DuckDB &nbsp;&#8594;&nbsp; 128+ 因子计算 &nbsp;&#8594;&nbsp; LGB+XGB+CatBoost 集成 &nbsp;&#8594;&nbsp; TopK 选股 + 回测验证
+    AKShare/CSV/Parquet → Alpha158 Handler → DatasetH → LGBModel → SignalRecord → TopkDropoutStrategy → 回测分析
   </div>
 </div>
 
-<h3>各阶段详细说明</h3>
+<h3>架构分层</h3>
 
 <table>
-<thead><tr><th>阶段</th><th>模块</th><th>核心功能</th><th>输出</th></tr></thead>
+<thead><tr><th>层级</th><th>模块</th><th>核心功能</th><th>Qlib 组件</th></tr></thead>
 <tbody>
-<tr><td><strong>Phase 1</strong></td><td>data_center</td><td>AKShare 数据下载、Parquet 存储、增量更新、质量校验</td><td>个股日线 / 指数 / 行业数据</td></tr>
-<tr><td><strong>Phase 2</strong></td><td>feature_engine</td><td>技术指标、横截面排名、Alpha 因子、基本面因子计算</td><td>每日 128+ 维特征矩阵</td></tr>
-<tr><td><strong>Phase 3</strong></td><td>model + dataset</td><td>Label 生成、时序划分、数据清洗、模型训练、集成预测</td><td>个股评分预测模型</td></tr>
-<tr><td><strong>Phase 4</strong></td><td>strategy + backtest</td><td>TopK 选股、权重分配、回测引擎、绩效评估</td><td>选股清单 + 回测报告</td></tr>
-<tr><td><strong>Phase 5</strong></td><td>scheduler</td><td>每日自动运行、模型滚动更新、通知告警</td><td>每日选股 CSV</td></tr>
+<tr><td><strong>数据层</strong></td><td>data_center</td><td>AKShare 下载、CSV/Parquet/QLib 三后端、DataStore 统一接口</td><td>D.features()</td></tr>
+<tr><td><strong>特征层</strong></td><td>qlib_pipeline + feature_engine</td><td>Alpha158/Alpha360 标准因子 + 自定义基本面/资金流/另类数据</td><td>Alpha158/Alpha360 Handler</td></tr>
+<tr><td><strong>管线层</strong></td><td>qlib_pipeline</td><td>DatasetH 构建、LGBModel 训练、滚动 Walk-Forward、TSCV</td><td>DatasetH + LGBModel + Workflow</td></tr>
+<tr><td><strong>回测层</strong></td><td>qlib_pipeline</td><td>信号生成、TopK 选股、回测执行、绩效分析</td><td>SignalRecord + PortAnaRecord + TopkDropoutStrategy</td></tr>
+<tr><td><strong>稳健性</strong></td><td>qlib_pipeline</td><td>PSI 漂移、ICIR/IC 衰减、市场阶段、超参数敏感性</td><td>Rolling + drift + ic_stability</td></tr>
 </tbody>
 </table>
+
+<h3>Qlib 标准能力使用</h3>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>DataHandler (Alpha158/Alpha360)</td><td class="yes">已使用</td><td>特征生成、标签生成、标准化</td></tr>
+<tr><td>DatasetH</td><td class="yes">已使用</td><td>train/valid/test 三段切分</td></tr>
+<tr><td>Workflow + Recorder</td><td class="yes">已使用</td><td>实验追踪、参数记录、模型管理</td></tr>
+<tr><td>SignalRecord</td><td class="yes">已使用</td><td>预测信号生成</td></tr>
+<tr><td>PortAnaRecord</td><td class="yes">已使用</td><td>回测分析</td></tr>
+<tr><td>TopkDropoutStrategy</td><td class="yes">已使用</td><td>TopK 选股策略</td></tr>
+<tr><td>SimulatorExecutor</td><td class="yes">已使用</td><td>回测执行器</td></tr>
+<tr><td>RollingDataHandler</td><td class="yes">已实现</td><td>qlib_pipeline/rolling.py</td></tr>
+</tbody>
+</table>
+</div>
 
 <!-- Chapter 3: Install -->
 <h2 id="install">3. 环境安装</h2>
@@ -564,9 +576,63 @@ python -c "import akshare; print(akshare.__version__)"</code></pre>
 <!-- Chapter 4: Config -->
 <h2 id="config">4. 配置文件详解</h2>
 
-<p>所有配置集中在 <code>config/</code> 目录下，通过 YAML 格式管理。修改配置后无需重启，下次运行自动生效。</p>
+<p>项目采用 <strong>配置即代码</strong> 理念，<code>qlib_pipeline/workflow_config.yaml</code> 是唯一的配置入口，覆盖所有参数。修改后无需重启，下次运行自动生效。旧版 <code>config/settings.yaml</code> 和 <code>config/model_config.yaml</code> 保留用于向后兼容。</p>
 
-<h3 id="config-settings">4.1 settings.yaml — 全局配置</h3>
+<h3 id="config-workflow">4.1 workflow_config.yaml — 核心配置（推荐）</h3>
+
+<p>整个项目唯一需要修改的配置文件，包含 14 个配置段：</p>
+
+<div class="callout">
+  <div class="callout-title">配置理念</div>
+  <p>修改 <code>workflow_config.yaml</code> 即可控制所有行为，无需修改任何 Python 代码。<br>
+  所有 <code>python run.py</code> 子命令均从此文件读取配置，同时支持 CLI 参数覆盖。</p>
+</div>
+
+<h4>配置段总览</h4>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>配置段</th><th>说明</th><th>关键参数</th></tr></thead>
+<tbody>
+<tr><td><code>qlib</code></td><td>Qlib 引擎</td><td>provider_uri, region</td></tr>
+<tr><td><code>data_source</code></td><td>数据源</td><td>data_format (csv/parquet/qlib), csv_dir, parquet_dir</td></tr>
+<tr><td><code>data_handler</code></td><td>Alpha158/360</td><td>start_time, end_time, fit_start_time, fit_end_time, instruments</td></tr>
+<tr><td><code>dataset</code></td><td>数据集</td><td>handler (Alpha158/Alpha360), segments (train/valid/test)</td></tr>
+<tr><td><code>model</code></td><td>模型参数</td><td>type (lgb/xgb/cat), lightgbm, xgboost, catboost, ensemble</td></tr>
+<tr><td><code>qlib_lgb</code></td><td>Qlib LGBM</td><td>loss (mse/rank), learning_rate, num_leaves, max_depth</td></tr>
+<tr><td><code>optuna</code></td><td>超参搜索</td><td>n_trials, cv_folds, direction</td></tr>
+<tr><td><code>shap</code></td><td>可解释性</td><td>max_display, sample_size</td></tr>
+<tr><td><code>strategy</code></td><td>策略</td><td>TopkDropoutStrategy, topk, n_drop</td></tr>
+<tr><td><code>risk</code></td><td>风险控制</td><td>max_position_pct, stop_loss_pct</td></tr>
+<tr><td><code>backtest</code></td><td>回测</td><td>start_time, end_time, account, benchmark, exchange_kwargs</td></tr>
+<tr><td><code>experiment</code></td><td>实验</td><td>name, mlflow_tracking_uri, random_seed</td></tr>
+<tr><td><code>training</code></td><td>训练</td><td>test_size, validation_size, shuffle</td></tr>
+<tr><td><code>features</code></td><td>自定义因子</td><td>enabled_categories, ic_threshold, corr_threshold</td></tr>
+</tbody>
+</table>
+</div>
+
+<h4>快速切换示例</h4>
+
+<pre><code># 切换 Alpha360
+dataset:
+  handler: "Alpha360"
+
+# 切换排序损失 + Top30
+qlib_lgb:
+  kwargs:
+    loss: "rank"
+strategy:
+  kwargs:
+    topk: 30
+
+# 修改训练/测试时间
+segments:
+  train: ["2015-01-01", "2020-12-31"]
+  valid: ["2021-01-01", "2022-12-31"]
+  test:  ["2023-01-01", "2024-12-31"]</code></pre>
+
+<h3 id="config-settings">4.2 settings.yaml — 全局配置（兼容）</h3>
 
 <h4>路径配置 (paths)</h4>
 <div class="table-wrap">
@@ -929,69 +995,44 @@ with DuckDBStore() as store:
     # 获取某日全市场快照
     df = store.get_market_snapshot("2024-01-01", top_n=100)</code></pre>
 
-<h3 id="module-feature">5.2 特征工程 (feature_engine)</h3>
+<h3 id="module-feature">5.2 特征工程 (feature_engine) — 精简版</h3>
 
-<h4>technical.py — 技术指标（71 个）</h4>
+<div class="callout success">
+  <div class="callout-title">架构变更说明（v2.1）</div>
+  <p>技术指标（technical.py）、Alpha 因子（alpha_factors.py）、横截面因子（cross_section.py）<strong>已移除</strong>——这些功能全部由 Qlib Alpha158/Alpha360 DataHandler 原生覆盖，质量更高且维护成本更低。feature_engine/ 现在只保留 Alpha158 无法覆盖的<strong>自定义因子</strong>。</p>
+</div>
 
-<p>纯 pandas/numpy 实现，无需 ta-lib。</p>
+<h4>fundamental.py — 基本面代理变量</h4>
 
-<pre><code>from feature_engine.technical import TechnicalFactorCalculator
+<p>从价格/量数据中估算基本面代理指标（PE/PB 代理、ROE 代理、市值分段等），用于补充 Alpha158 中不包含的基本面维度。</p>
 
-calc = TechnicalFactorCalculator()
+<pre><code>from feature_engine.fundamental import FundamentalFactorCalculator
 
-# 输入：单只股票的 OHLCV DataFrame
-# 输出：含所有技术指标的 DataFrame
-factors = calc.compute_all(df)
+calc = FundamentalFactorCalculator()
 
-# 单独计算某类指标
-trend = calc.compute_trend(df)       # 21 个趋势指标
-momentum = calc.compute_momentum(df) # 12 个动量指标
-vol = calc.compute_volatility(df)    # 8 个波动指标
-vp = calc.compute_volume_price(df)   # 16 个量价指标
-stat = calc.compute_statistical(df)  # 14 个统计指标</code></pre>
+# 计算单只股票的基本面代理因子
+factors = calc.compute_fundamental_factors(df)
+
+# 包含：pe_proxy, pb_proxy, roe_proxy, market_cap_segment 等</code></pre>
+
+<h4>扩展因子（占位模块）</h4>
+
+<p>以下模块已预留接口，待数据源就绪后即可启用：</p>
 
 <div class="table-wrap">
 <table>
-<thead><tr><th>类别</th><th>数量</th><th>代表因子</th></tr></thead>
+<thead><tr><th>模块</th><th>用途</th><th>状态</th></tr></thead>
 <tbody>
-<tr><td>趋势</td><td>21</td><td>MA5/10/20/60/120, EMA, MACD, ADX, CCI, BB</td></tr>
-<tr><td>动量</td><td>12</td><td>RSI6/14/24, KDJ, WR, MOM, Ret1d/5d/10d/20d/60d</td></tr>
-<tr><td>波动</td><td>8</td><td>ATR, STD20/60, HV20/60, UlcerIndex</td></tr>
-<tr><td>量价</td><td>16</td><td>OBV, CMF, MFI, VWAP, VolumeRatio, Turnover</td></tr>
-<tr><td>统计</td><td>14</td><td>Skew, Kurt, Beta, Alpha, Sharpe, MaxDD, Calmar</td></tr>
+<tr><td><code>fund_flow.py</code></td><td>主力资金流向、北向资金、融资融券</td><td>占位</td></tr>
+<tr><td><code>industry.py</code></td><td>行业分类、行业轮动、产业链关系</td><td>占位</td></tr>
+<tr><td><code>news.py</code></td><td>新闻情绪分析、NLP 舆情评分</td><td>占位</td></tr>
+<tr><td><code>announcements.py</code></td><td>公告事件驱动（业绩预告、分红、增发）</td><td>占位</td></tr>
+<tr><td><code>alternative_data.py</code></td><td>另类数据（社交媒体、搜索热度、卫星图像）</td><td>占位</td></tr>
 </tbody>
 </table>
 </div>
 
-<h4>cross_section.py — 横截面因子（28 个）</h4>
-
-<p>每日全市场横截面排名和分位数。</p>
-
-<pre><code>from feature_engine.cross_section import CrossSectionCalculator
-
-calc = CrossSectionCalculator()
-
-# 输入：Dict[str, DataFrame] 所有股票的 OHLCV
-# 输出：Dict[str, DataFrame] 每只股票的横截面因子
-cross_factors = calc.compute_all(data_dict)
-
-# 包含：close_rank, close_pct, volume_rank, ret_5d_rank,
-#       volatility_rank, momentum_rank, rsi14_rank, macd_rank
-#       以及 industry-relative 排名（如有行业数据）</code></pre>
-
-<h4>alpha_factors.py — Alpha 因子（19 个）</h4>
-
-<p>WorldQuant 经典 Alpha 因子实现。</p>
-
-<pre><code>from feature_engine.alpha_factors import AlphaFactorCalculator
-
-calc = AlphaFactorCalculator()
-alpha_factors = calc.compute_all(data_dict)
-
-# Alpha001 ~ Alpha101 系列简化实现
-# 基于 price, volume, returns 的组合公式</code></pre>
-
-<h4>factor_store.py — 因子存储</h4>
+<h4>factor_store.py — 因子存储管理</h4>
 
 <pre><code>from feature_engine.factor_store import FactorStore
 
@@ -1006,53 +1047,127 @@ factors = store.load_factors(codes, "2023-01-01", "2024-01-01", version="v1")
 # 构建宽矩阵（ML 训练用）
 matrix = store.build_factor_matrix(factors_dict, "2023-01-01", "2024-01-01")</code></pre>
 
-<h3 id="module-dataset">5.3 数据集 (dataset)</h3>
+<h3 id="module-qlib-pipeline">5.3 Qlib Pipeline 核心 (qlib_pipeline)</h3>
 
-<h4>label_generator.py</h4>
+<p>Qlib 标准管线核心模块，遵循官方 Workflow 规范：<mark class="key">DataHandler → DatasetH → Model → SignalRecord → PortAnaRecord</mark>。</p>
 
-<pre><code>from dataset.label_generator import LabelGenerator
+<h4>workflow_config.yaml — 统一配置入口</h4>
+<p>整个项目唯一的配置入口，包含 14 个配置段，覆盖数据、模型、策略、回测、实验全流程。详见 <a href="#config-workflow">第 4.1 节</a>。</p>
 
-gen = LabelGenerator()
+<h4>dataset.py — 数据集构建</h4>
+<pre><code>from qlib_pipeline.dataset import load_workflow_config
 
-# 生成主 Label（默认 alpha_20d）
-labels = gen.generate(data_dict)
+# 加载统一配置
+config = load_workflow_config("qlib_pipeline/workflow_config.yaml")
 
-# 生成全部 Label 类型
-all_labels = gen.generate_all_labels(data_dict)
+# 配置 DataHandler + DatasetH
+# handler: Alpha158（158 因子）或 Alpha360（360 因子）
+# segments: train / valid / test 三段式划分</code></pre>
 
-# Label 类型：ret_20d, ret_60d, alpha_20d, alpha_60d</code></pre>
+<h4>train.py — 标准 Workflow 训练</h4>
+<pre><code>from qlib_pipeline.train import build_task, run_train, init_qlib_env
 
-<h4>time_splitter.py</h4>
+# 初始化 Qlib 环境（Windows 兼容单线程模式）
+init_qlib_env(config)
 
-<pre><code>from dataset.time_splitter import TimeSplitter
+# 构建 Qlib task dict（model + dataset）
+task = build_task(config)
 
-splitter = TimeSplitter()
+# 运行训练流程
+model, dataset, rid = run_train(config=config, experiment_name="qlib_train")
 
-# 纯时间序列划分（无随机打乱）
-train, valid, test = splitter.split(df, mode="train_valid_test")
+# 返回: recorder_id 可用于后续回测</code></pre>
 
-# 只划分训练/测试
-train, test = splitter.split(df, mode="train_test")</code></pre>
+<h4>backtest.py — 回测 + Plotly 图表</h4>
+<pre><code>from qlib_pipeline.backtest import generate_report_charts, print_summary
 
-<h4>data_cleaner.py</h4>
+# 从 PortAnaRecord 生成分析报告
+print_summary(report_normal_df, analysis_df)
 
-<pre><code>from dataset.data_cleaner import DataCleaner
+# 生成 5 张 Plotly 交互式图表
+generate_report_charts(pred_df, report_normal_df, analysis_df,
+                       output_dir="output/qlib_charts")</code></pre>
 
-cleaner = DataCleaner()
+<div class="callout">
+  <div class="callout-title">图表输出</div>
+  <p>自动生成：净值曲线、回撤分析、IC 序列、月度收益热力图、风险指标仪表盘（详见 <a href="#charts">第 8 章</a>）</p>
+</div>
 
-# 完整清洗流程
-clean_df = cleaner.clean_features(df)
+<h4>model.py — 模型配置适配层</h4>
+<pre><code>from qlib_pipeline.model import create_rank_model
 
-# 分步清洗
-df = cleaner.handle_missing(df)          # 缺失值处理
-df = cleaner.winsorize_dataframe(df)     # 1%/99% 截尾
-df = cleaner.standardize_cross_section(df)  # 截面标准化
+# 快速创建 Qlib 原生 LGBModel（排序损失）
+model_cfg = create_rank_model()
+# 返回: {"class": "LGBModel", "module_path": "qlib.contrib.model.gbdt",
+#        "kwargs": {"loss": "rank", ...}}</code></pre>
 
-# 因子筛选
-selected = cleaner.filter_by_ic(features, labels, threshold=0.02)
-selected = cleaner.filter_by_correlation(features, threshold=0.95)</code></pre>
+<h4>numpy_compat.py — NumPy 2.x 兼容补丁</h4>
+<p>在导入 Qlib 之前必须执行，修复 <code>np.NaN</code> / <code>np.bool</code> 等废弃 API 导致的兼容性问题。</p>
 
-<h3 id="module-model">5.4 模型平台 (model)</h3>
+<pre><code># 所有脚本开头必须：
+from qlib_pipeline.numpy_compat import *  # noqa - 必须在 qlib 之前
+import qlib</code></pre>
+
+<h3 id="module-robustness">5.4 稳健性工具 (qlib_pipeline)</h3>
+
+<p>v2.1 新增的 6 个稳健性验证模块，覆盖模型泛化能力评估的全维度。</p>
+
+<h4>rolling.py — 滚动 Walk-Forward 验证</h4>
+<pre><code>python run.py rolling --n-folds 6 --window-years 3.0 --step-months 6
+
+# 输出：每期 IC/RankIC、回测收益、时间序列稳定性图
+# 报告路径：output/rolling/rolling_summary.csv</code></pre>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>参数</th><th>默认值</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>--n-folds</code></td><td>6</td><td>滚动窗口数</td></tr>
+<tr><td><code>--window-years</code></td><td>3.0</td><td>每期训练窗口长度（年）</td></tr>
+<tr><td><code>--step-months</code></td><td>6</td><td>窗口滚动步长（月）</td></tr>
+</tbody>
+</table>
+</div>
+
+<h4>drift.py — PSI / 概念漂移检测</h4>
+<pre><code>python run.py drift
+
+# 输出：特征 PSI 矩阵、概念漂移报告、稳定性评分
+# 报告路径：output/drift/psi_report.csv</code></pre>
+
+<h4>ic_stability.py — ICIR / IC 衰减 / 分层 IC</h4>
+<pre><code>python run.py ic-stability
+
+# 输出：ICIR、IC 衰减曲线、分层 IC（按市值/行业）、IC 自相关
+# 报告路径：output/ic_stability/ic_stability_report.csv</code></pre>
+
+<h4>tscv.py — Purged K-Fold 时间序列交叉验证</h4>
+<pre><code>python run.py tscv --n-splits 5 --purge-days 5 --embargo-days 0
+
+# 输出：每折 IC/RankIC、均值±标准差、泛化误差估计
+# 报告路径：output/tscv/tscv_summary.csv</code></pre>
+
+<h4>regime.py — 市场阶段分析 + 关键年份回测</h4>
+<pre><code># 市场阶段稳定性分析（bull/strong_bull/bear/strong_bear）
+python run.py regime
+
+# 关键年份独立回测
+python run.py key-years --years 2020,2022,2024
+
+# 输出：各市场阶段 IC 表现、关键年份超额收益
+# 报告路径：output/regime/regime_report.csv</code></pre>
+
+<h4>sensitivity.py — 超参数敏感性分析</h4>
+<pre><code># 全参数扫描
+python run.py sensitivity
+
+# 单参数扫描
+python run.py sensitivity --param learning_rate --values 0.01,0.05,0.10,0.15
+
+# 输出：各参数组合的 IC/RankIC 变化热力图
+# 报告路径：output/sensitivity/sensitivity_report.csv</code></pre>
+
+<h3 id="module-model">5.5 模型平台 (model)</h3>
 
 <h4>集成模型训练</h4>
 
@@ -1129,169 +1244,119 @@ versions = registry.list_models("stock_selector")
 # 回滚到旧版本
 registry.rollback_model("stock_selector", target_version="v2")</code></pre>
 
-<h3 id="module-strategy">5.5 策略与回测 (strategy + backtest)</h3>
-
-<h4>TopK 选股</h4>
-
-<pre><code>from strategy.topk_selector import TopKSelector
-
-selector = TopKSelector()
-
-# 选股（行业中性化）
-selected = selector.select(
-    predictions_df,      # 含 stock_code, score, industry 列
-    date="2024-01-01",
-    top_k=30,
-    industry_neutral=True
-)
-
-# 返回：stock_code, score, rank, industry, weight</code></pre>
-
-<h4>权重分配</h4>
-
-<pre><code>from strategy.weight_allocator import WeightAllocator
-
-allocator = WeightAllocator()
-
-# 等权
-portfolio = allocator.allocate_equal(selected)
-
-# 按得分加权
-portfolio = allocator.allocate_score_weighted(selected)
-
-# 风险平价（简化逆波动率）
-portfolio = allocator.allocate_risk_parity(selected, returns_data)
-
-# 统一入口
-portfolio = allocator.allocate(selected, method="equal")</code></pre>
-
-<h4>回测引擎</h4>
-
-<pre><code>from backtest.backtest_engine import BacktestEngine
-
-engine = BacktestEngine(
-    cash=1000000,
-    commission_buy=0.00025,
-    commission_sell=0.00125,
-    slippage=0.001,
-    benchmark="000905"
-)
-
-results = engine.run(
-    price_data_dict,      # 所有股票价格数据
-    predictions_by_date,  # 每日预测分数
-    strategy,             # 策略对象
-    start_date="2023-01-01",
-    end_date="2024-01-01",
-    rebalance_freq="monthly"
-)
-
-# results 包含：equity_curve, trades, metrics</code></pre>
-
-<h4>绩效报告</h4>
-
-<pre><code>from backtest.performance_report import PerformanceReport
-
-report = PerformanceReport()
-metrics = report.generate_report(
-    equity_curve, benchmark_equity, trades,
-    start_date="2023-01-01", end_date="2024-01-01"
-)
-
-report.print_report(metrics)
-report.save_report(metrics, "output/backtest_report.json")</code></pre>
-
 <!-- Chapter 6: Usage -->
 <h2 id="usage">6. 使用指南</h2>
 
-<h3 id="usage-train">6.1 训练模型</h3>
+<p>所有流程统一通过 <code>run.py</code> 入口，配置由 <code>qlib_pipeline/workflow_config.yaml</code> 管理。修改配置后无需改代码，直接切换。</p>
 
-<h4>使用自有 CSV 数据训练（推荐）</h4>
-<p>将 <code>config/settings.yaml</code> 中的 <code>data_source.primary</code> 设为 <code>"csv"</code>，并指定 <code>csv_dir</code>，即可直接使用自有数据：</p>
+<h3 id="usage-core">6.1 核心流程</h3>
 
-<pre><code># config/settings.yaml
-data_source:
-  data_format: "csv"    # parquet / csv / qlib
-  csv_dir: "D:/data"
-  parquet_dir: ".../data/daily"
-  qlib_dir: ".../qlib_data/cn_data"</code></pre>
+<h4>一键跑通（训练 + 回测 + 图表）</h4>
+<pre><code># 默认 Alpha158 因子 + LightGBM 回归
+python run.py full
 
-<pre><code># 切换数据源只需改 settings.yaml，无需改代码
-python train.py --sample 100 --start 2020-01-01 --end 2024-12-31</code></pre>
+# 使用 Alpha360 因子 + 排序损失
+python run.py full --handler Alpha360 --loss rank
 
-<h4>快速测试（推荐首次运行）</h4>
-<pre><code>python train.py --sample 50 --start 2023-01-01 --end 2024-06-30</code></pre>
+# 自定义 Top-K 选股数 + 输出目录
+python run.py full --topk 30 --output-dir output/my_charts</code></pre>
 
-<h4>使用 AKShare 数据训练</h4>
-<pre><code># 第一步：下载历史数据（首次）
-python data_center/download_history.py --sample 500
+<h4>仅训练模型</h4>
+<pre><code>python run.py train
 
-# 第二步：训练
-python train.py --start 2015-01-01 --end 2024-12-31</code></pre>
+# 使用 Alpha360 + 自定义实验名
+python run.py train --handler Alpha360 --experiment my_experiment</code></pre>
 
-<h4>命令行参数</h4>
+<h4>仅回测（需已有训练结果）</h4>
+<pre><code>python run.py backtest --rid &lt;recorder_id&gt; --topk 30</code></pre>
+
+<h3 id="usage-robustness">6.2 稳健性验证</h3>
+
 <div class="table-wrap">
 <table>
-<thead><tr><th>参数</th><th>默认值</th><th>说明</th></tr></thead>
+<thead><tr><th>命令</th><th>功能</th><th>示例</th></tr></thead>
 <tbody>
-<tr><td><code>--config</code></td><td>config/settings.yaml</td><td>配置文件路径</td></tr>
-<tr><td><code>--sample</code></td><td>50</td><td>采样股票数，0=全部</td></tr>
-<tr><td><code>--start</code></td><td>2020-01-01</td><td>训练起始日期</td></tr>
-<tr><td><code>--end</code></td><td>2024-12-31</td><td>训练结束日期</td></tr>
-<tr><td><code>--skip-features</code></td><td>false</td><td>跳过特征计算</td></tr>
-<tr><td><code>--skip-data</code></td><td>false</td><td>跳过数据加载</td></tr>
-<tr><td><code>--model-type</code></td><td>ensemble</td><td>模型类型</td></tr>
-<tr><td><code>--output-dir</code></td><td>models</td><td>模型输出目录</td></tr>
+<tr><td><code>rolling</code></td><td>滚动 Walk-Forward 验证</td><td><code>python run.py rolling --n-folds 6</code></td></tr>
+<tr><td><code>drift</code></td><td>PSI 特征漂移检测</td><td><code>python run.py drift</code></td></tr>
+<tr><td><code>ic-stability</code></td><td>ICIR / IC 衰减 / 分层 IC</td><td><code>python run.py ic-stability</code></td></tr>
+<tr><td><code>tscv</code></td><td>Purged K-Fold TSCV</td><td><code>python run.py tscv --n-splits 5</code></td></tr>
+<tr><td><code>regime</code></td><td>市场阶段稳定性分析</td><td><code>python run.py regime</code></td></tr>
+<tr><td><code>sensitivity</code></td><td>超参数敏感性分析</td><td><code>python run.py sensitivity</code></td></tr>
+<tr><td><code>key-years</code></td><td>关键年份独立回测</td><td><code>python run.py key-years --years 2020,2022,2024</code></td></tr>
 </tbody>
 </table>
 </div>
 
-<h3 id="usage-daily">6.2 每日选股</h3>
+<h3 id="usage-data">6.3 数据管理</h3>
 
-<h4>试运行（不输出文件）</h4>
-<pre><code>python daily_run.py --top-k 30 --dry-run</code></pre>
+<pre><code># 下载 AKShare 全量历史数据
+python run.py data --download --sample 500
 
-<h4>正式运行</h4>
-<pre><code>python daily_run.py --top-k 30 --output-dir output</code></pre>
+# CSV 转 Qlib bin 格式
+python run.py data --convert --csv-dir D:/data
 
-<h4>指定日期和模型版本</h4>
-<pre><code>python daily_run.py --date 2024-06-28 --model-version v3 --top-k 30</code></pre>
+# 检查数据完整性
+python run.py data --check</code></pre>
 
-<h4>命令行参数</h4>
+<h3 id="usage-params">6.4 参数覆盖</h3>
+
+<p>所有子命令均支持通过命令行参数覆盖配置文件中的默认值：</p>
+
 <div class="table-wrap">
 <table>
-<thead><tr><th>参数</th><th>默认值</th><th>说明</th></tr></thead>
+<thead><tr><th>参数</th><th>适用命令</th><th>说明</th></tr></thead>
 <tbody>
-<tr><td><code>--date</code></td><td>今天</td><td>运行日期</td></tr>
-<tr><td><code>--top-k</code></td><td>30</td><td>选股数量</td></tr>
-<tr><td><code>--step</code></td><td>all</td><td>单独运行某一步</td></tr>
-<tr><td><code>--model-version</code></td><td>latest</td><td>模型版本</td></tr>
-<tr><td><code>--dry-run</code></td><td>false</td><td>试运行模式</td></tr>
-<tr><td><code>--weight-method</code></td><td>equal</td><td>权重分配方法</td></tr>
-<tr><td><code>--industry-neutral</code></td><td>true</td><td>行业中性化</td></tr>
+<tr><td><code>--config</code></td><td>全部</td><td>指定配置文件路径（默认 workflow_config.yaml）</td></tr>
+<tr><td><code>--handler</code></td><td>train / full</td><td>Alpha158 或 Alpha360</td></tr>
+<tr><td><code>--model-type</code></td><td>train / full</td><td>lgb 或 xgb</td></tr>
+<tr><td><code>--loss</code></td><td>train / full</td><td>mse 或 rank</td></tr>
+<tr><td><code>--topk</code></td><td>full / backtest</td><td>选股数量（默认 50）</td></tr>
+<tr><td><code>--output-dir</code></td><td>full / backtest / 稳健性</td><td>输出目录</td></tr>
 </tbody>
 </table>
 </div>
 
-<h3 id="usage-backtest">6.3 回测验证</h3>
+<h3 id="usage-pick">6.5 选股推荐</h3>
 
-<p>回测集成在训练流程的 Step 10 中自动执行。也可独立运行：</p>
+<p>所有训练流程完成后，自动输出 Top-K 选股推荐列表。也可单独运行：</p>
 
-<pre><code>from backtest.backtest_engine import BacktestEngine
-from backtest.benchmark_loader import BenchmarkLoader
-from backtest.performance_report import PerformanceReport
+<pre><code># 跑完全流程后自动输出选股推荐（默认 Top-30）
+python run.py full --pick-topk 30
 
-# 加载基准
-benchmark = BenchmarkLoader().load_benchmark("000905", "2023-01-01", "2024-01-01")
+# 仅回测 + 选股推荐
+python run.py backtest --rid &lt;recorder_id&gt; --pick-topk 30
 
-# 运行回测
-engine = BacktestEngine(cash=1000000)
-results = engine.run(price_data, predictions, strategy, "2023-01-01", "2024-01-01")
+# 单独选股推荐（从已有回测记录提取）
+python run.py pick --rid &lt;recorder_id&gt; --topk 30
 
-# 生成报告
-report = PerformanceReport()
-metrics = report.generate_report(results['equity'], benchmark, results['trades'])
-report.print_report(metrics)</code></pre>
+# 指定日期
+python run.py pick --rid &lt;recorder_id&gt; --date 2025-12-31 --topk 20</code></pre>
+
+<h4>输出格式</h4>
+
+<pre><code>======================================================================
+  Top-30 选股推荐  [2025-12-31]
+======================================================================
+排名    股票代码       预测得分    信号强度
+----------------------------------------------------------------------
+  #1    600519      0.085234    ★★★ 强
+  #2    000858      0.072156    ★★★ 强
+  #3    601318      0.058423    ★★★ 强
+  ...
+  #28   600036      0.000245    ★☆☆ 弱
+  #29   601166     -0.001234    --- 负
+  #30   600016     -0.003567    --- 负
+----------------------------------------------------------------------
+  强信号(>0.03): 12只 | 中信号(0.01~0.03): 10只 | 弱信号(0~0.01): 5只
+  平均得分: 0.028456 | 最高: 0.085234 | 最低: -0.003567
+======================================================================</code></pre>
+
+<p>选股结果同时保存到 <code>output/picks/stock_picks_YYYYMMDD.csv</code>，便于后续分析和实盘参考。</p>
+
+<div class="callout">
+  <div class="callout-title">注意</div>
+  <p>选股推荐基于模型预测得分排序，<strong>仅供参考</strong>，不构成投资建议。实盘前请务必完成稳健性验证清单（第 6.2 节）。</p>
+</div>
 
 <!-- Chapter 7: Tuning -->
 <h2 id="tuning">7. 参数调优指南</h2>
@@ -1410,172 +1475,119 @@ print(best_lgb)
 </table>
 </div>
 
-<!-- Chapter 9: Charts -->
-<h2 id="charts">9. 图形报表</h2>
+<!-- Chapter 8: Charts -->
+<h2 id="charts">8. 图形报表</h2>
 
-<p>项目内置了独立的图形报表生成脚本 <code>generate_charts.py</code>，可直接从自有 CSV 数据生成完整的量化分析图表，无需依赖 Qlib 的分析模块（Qlib 0.9.7 与 numpy 2.x 存在兼容性 bug）。</p>
+<p>图表由 <code>qlib_pipeline/backtest.py</code> 通过 Plotly + Kaleido 自动生成，无需额外配置。运行 <code>python run.py full</code> 后自动输出到 <code>output/qlib_charts/</code> 目录。</p>
 
-<h3>9.1 图表生成脚本</h3>
+<h3>8.1 一键生成</h3>
 
-<pre><code># 使用自有 CSV 数据生成 10 张分析图表
-python generate_charts.py --sample 50
+<pre><code># 训练+回测+图表一键完成
+python run.py full --output-dir output/qlib_charts
 
-# 输出目录
-output/qlib_charts/
-  01_feature_ic.png          # Top 20 因子 IC 柱状图
-  02_ic_series.png           # IC 时间序列 + 20日滚动均值
-  03_model_performance.png   # 预测 vs 实际收益散点图
-  04_equity_curve.png        # Top-K 策略 vs 等权基准净值曲线
-  05_drawdown.png            # 回撤分析（红色填充区域）
-  06_return_distribution.png # 日收益率分布 + 正态拟合
-  07_feature_importance.png  # Top 30 特征重要性（渐变色）
-  08_rolling_sharpe.png      # 60日滚动 Sharpe 比率
-  09_monthly_returns.png     # 月度收益率热力图
-  10_risk_metrics.png        # 风险指标仪表盘</code></pre>
+# 仅回测已有模型（生成图表）
+python run.py backtest --rid &lt;recorder_id&gt; --output-dir output/qlib_charts</code></pre>
 
-<h3>9.2 数据来源</h3>
-<p>图表生成脚本自动从 <code>config/settings.yaml</code> 中配置的 <code>csv_dir</code> 读取数据，经过以下流程：</p>
-<ol>
-  <li>CSV 数据加载（<code>CsvDataLoader</code>）</li>
-  <li>技术因子计算（<code>TechnicalFactorCalculator</code>，71 个因子）</li>
-  <li>横截面因子计算（<code>CrossSectionCalculator</code>）</li>
-  <li>标签生成（<code>LabelGenerator</code>）</li>
-  <li>LightGBM 模型训练与预测</li>
-  <li>评估指标计算与图表输出</li>
-</ol>
+<h3>8.2 图表清单</h3>
 
-<h3>9.3 图表说明</h3>
 <div class="table-wrap">
 <table>
-<thead><tr><th>图表</th><th>用途</th><th>依赖模块</th></tr></thead>
+<thead><tr><th>图表</th><th>文件</th><th>用途</th></tr></thead>
 <tbody>
-<tr><td>因子 IC 分析</td><td>识别预测能力最强的特征因子</td><td>ICAnalyzer</td></tr>
-<tr><td>IC 时间序列</td><td>观察因子稳定性随时间变化</td><td>ICAnalyzer</td></tr>
-<tr><td>模型性能散点</td><td>评估预测值与实际收益的相关性</td><td>手动计算</td></tr>
-<tr><td>净值曲线</td><td>对比策略与基准的收益走势</td><td>手动计算</td></tr>
-<tr><td>回撤分析</td><td>识别最大回撤及持续期</td><td>DrawdownAnalyzer</td></tr>
-<tr><td>收益分布</td><td>检验收益率是否服从正态分布</td><td>scipy.stats</td></tr>
-<tr><td>特征重要性</td><td>定位模型最依赖的特征</td><td>LightGBM</td></tr>
-<tr><td>滚动 Sharpe</td><td>动态评估风险调整收益</td><td>SharpeAnalyzer</td></tr>
-<tr><td>月度收益热力图</td><td>识别季节性收益模式</td><td>手动计算</td></tr>
-<tr><td>风险仪表盘</td><td>汇总核心风险指标</td><td>SharpeAnalyzer + DrawdownAnalyzer</td></tr>
+<tr><td>净值曲线</td><td><code>equity_curve.png</code></td><td>策略 vs 基准累计收益对比，含超额收益曲线</td></tr>
+<tr><td>回撤分析</td><td><code>drawdown.png</code></td><td>最大回撤及持续期，红色填充区域</td></tr>
+<tr><td>IC 序列</td><td><code>ic_series.png</code></td><td>IC 时间序列 + 20 日滚动均值，观察因子稳定性</td></tr>
+<tr><td>月度收益</td><td><code>monthly_returns.png</code></td><td>月度收益热力图，识别季节性收益模式</td></tr>
+<tr><td>风险仪表盘</td><td><code>risk_dashboard.png</code></td><td>年化收益、夏普比率、最大回撤、Calmar、胜率等汇总</td></tr>
 </tbody>
 </table>
 </div>
 
-<h3>9.4 Qlib 原生分析（可选）</h3>
-<p>如需使用 Qlib 官方的分析报表，项目同时提供了 <code>run_qlib_workflow.py</code> 脚本，将 CSV 数据转换为 Qlib bin 格式后运行标准 workflow。</p>
+<h3>8.3 技术栈</h3>
 
-<div class="callout warning">
-  <div class="callout-title">注意：Qlib 0.9.7 兼容性问题</div>
-  <p>Qlib 0.9.7 与 numpy 2.x 存在兼容性问题，运行时会报错 <code>np.isclose() got an unexpected keyword argument 'rtol'</code>。解决方案：</p>
-  <ul>
-    <li>方案 A（推荐）：使用项目自有的 <code>generate_charts.py</code> 生成图表</li>
-    <li>方案 B：降级 numpy 到 1.x：<code>pip install numpy&lt;2</code></li>
-  </ul>
+<ul>
+  <li><strong>图表引擎</strong>：Plotly（交互式 Web 图表）+ Kaleido（静态导出 PNG）</li>
+  <li><strong>数据来源</strong>：Qlib PortAnaRecord 输出的 <code>report_normal_1day.pkl</code> 和 <code>port_analysis_1day.pkl</code></li>
+  <li><strong>兼容性</strong>：完全绕过 Qlib 0.9.7 与 numpy 2.x 的兼容性问题，无需降级 numpy</li>
+</ul>
+
+<div class="callout success">
+  <div class="callout-title">Qlib 兼容性解决方案</div>
+  <p>v2.1 的图表生成已完全独立于 Qlib 的分析模块（<code>qlib.contrib.report</code>），通过 <code>numpy_compat.py</code> 补丁 + Plotly 自绘图表，彻底解决了 Qlib 0.9.7 与 numpy 2.x 的兼容性问题。</p>
 </div>
 
-<!-- Chapter 10: FAQ -->
-<h2 id="faq">10. 常见问题</h2>
+<!-- Chapter 9: FAQ -->
+<h2 id="faq">9. 常见问题</h2>
 
-<h4>Q1: 运行 train.py 报 "Population must be a sequence" 错误？</h4>
-<p>这是随机采样股票列表时的错误，说明获取到的股票列表为空或格式不对。检查 AKShare 网络连接，或增大 <code>--sample</code> 参数。</p>
+<h4>Q1: 运行 run.py 报 NumPy 兼容性错误？</h4>
+<p>确保所有脚本开头先导入 <code>qlib_pipeline.numpy_compat</code> 再导入 <code>qlib</code>。v2.1 已通过 <code>numpy_compat.py</code> 补丁修复了 <code>np.NaN</code> / <code>np.bool</code> 等废弃 API 问题。</p>
 
-<h4>Q2: 数据下载太慢怎么办？</h4>
-<p>调整 <code>settings.yaml</code> 中的 <code>max_workers</code>（建议 5-15）和 <code>retry_delay</code>（建议 2-5 秒）。网络高峰期可降低并发数避免限流。</p>
+<h4>Q2: Qlib 训练报 "dataset_process_n_worker" 相关错误？</h4>
+<p>Windows 下必须使用单线程模式。项目已通过 <code>init_qlib_env()</code> 自动配置：<code>C.joblib_backend = "threading"</code> 和 <code>C.dataset_process_n_worker = 1</code>。</p>
 
-<h4>Q3: 模型 RankIC 很低（&lt;0.03）怎么办？</h4>
+<h4>Q3: 模型 IC 很低怎么办？</h4>
 <ol>
-  <li>检查 Label 定义是否正确（应预测未来收益，不能用未来数据）</li>
-  <li>增大数据量（训练集至少 5 年+）</li>
-  <li>尝试 Optuna 调参优化模型超参</li>
-  <li>检查特征是否有前视偏差（lookahead bias）</li>
+  <li>尝试切换 Alpha360 因子（<code>--handler Alpha360</code>），因子更多可能捕获不同信号</li>
+  <li>尝试排序损失（<code>--loss rank</code>），更适合选股场景</li>
+  <li>运行 <code>python run.py ic-stability</code> 检查各因子 IC 衰减情况</li>
+  <li>运行 <code>python run.py regime</code> 检查是否在特定市场阶段失效</li>
 </ol>
 
-<h4>Q4: 回测收益很高但实盘亏损？</h4>
+<h4>Q4: 回测收益高但实盘亏损？</h4>
 <ol>
-  <li>检查是否有未来函数（用未来数据计算特征/label）</li>
-  <li>确认手续费和滑点设置是否接近真实</li>
-  <li>检查是否处理了涨跌停、停牌等真实约束</li>
-  <li>回测时间跨度是否覆盖牛熊周期</li>
+  <li>运行 <code>python run.py rolling --n-folds 6</code> 检查 Walk-Forward 表现是否一致</li>
+  <li>运行 <code>python run.py drift</code> 检查特征是否发生漂移</li>
+  <li>运行 <code>python run.py tscv --n-splits 5</code> 验证泛化误差</li>
+  <li>运行 <code>python run.py key-years</code> 检查极端年份表现</li>
 </ol>
 
-<h4>Q5: 如何增加新的技术指标？</h4>
-<p>在 <code>feature_engine/technical.py</code> 的 <code>TechnicalFactorCalculator</code> 类中添加新方法，然后在 <code>compute_all()</code> 中调用。确保只使用到当前日期的数据。</p>
+<h4>Q5: 如何切换数据源？</h4>
+<p>修改 <code>qlib_pipeline/workflow_config.yaml</code> 中的 <code>qlib.provider_uri</code>：</p>
+<pre><code># Qlib bin 格式（推荐，训练最快）
+qlib:
+  provider_uri: "d:/project/qlib-stock/qlib_data/cn_data"
 
-<h4>Q6: 每日运行如何自动化？</h4>
-<p>使用 Windows 任务计划程序或 Linux cron，在每日收盘后（15:30 之后）运行：</p>
-<pre><code>python daily_run.py --top-k 30</code></pre>
+# 需先生成 Qlib bin 数据
+python run.py data --convert --csv-dir D:/data</code></pre>
+
+<h4>Q6: 如何自动化每日运行？</h4>
+<p>使用 Windows 任务计划程序，在每日收盘后（15:30 之后）运行：</p>
+<pre><code>python run.py full --topk 30 --output-dir output/daily</code></pre>
 
 <h4>Q7: 模型需要多久重新训练一次？</h4>
-<p>建议 <strong>每月</strong>重新训练一次，使用最新的数据扩展训练集。市场风格变化快时可缩短到 <strong>每两周</strong>。使用 <code>scheduler/model_roll.py</code> 自动管理。</p>
+<p>建议 <strong>每月</strong>重新训练一次。使用滚动训练验证是否需要更频繁更新：</p>
+<pre><code>python run.py rolling --n-folds 12 --step-months 1</code></pre>
 
-<h4>Q8: 如何切换基准指数？</h4>
-<p>修改 <code>settings.yaml</code> 中 <code>labels.alpha_20d.benchmark</code> 和 <code>backtest.benchmark</code>：</p>
-<pre><code># 沪深300
-benchmark: "000300"
+<h4>Q8: Alpha158 和 Alpha360 怎么选？</h4>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Handler</th><th>因子数</th><th>训练速度</th><th>适用场景</th></tr></thead>
+<tbody>
+<tr><td>Alpha158</td><td>158</td><td>快</td><td>日常使用，因子足够且训练高效</td></tr>
+<tr><td>Alpha360</td><td>360</td><td>较慢</td><td>追求更高 IC，因子更多但可能过拟合</td></tr>
+</tbody>
+</table>
+</div>
 
-# 中证1000
-benchmark: "000852"</code></pre>
+<h4>Q9: 如何添加自定义因子？</h4>
+<p>在 <code>feature_engine/</code> 目录下创建新模块（如 <code>my_factors.py</code>），实现因子计算逻辑后，在 <code>workflow_config.yaml</code> 的 <code>features.enabled_categories</code> 中添加即可。Alpha158 已覆盖的因子不需要重复实现。</p>
 
-<h4>Q9: 标签生成报错 "You are trying to merge on object and datetime64[ns] columns"？</h4>
-<p>这是日期类型不匹配导致的。<code>label_generator.py</code> 在 merge 前已将 <code>date</code> 列统一转为 <code>datetime64[ns]</code>。如果仍然报错，确保项目已更新到最新版本：</p>
-<pre><code>git pull  # 或重新下载最新代码</code></pre>
-
-<h4>Q10: 自有 CSV 数据如何接入系统？</h4>
-<p>三步完成接入，<strong>无需修改任何业务代码</strong>：</p>
-<ol>
-  <li>确保 CSV 文件命名格式为 <code>sh.600000.csv</code> 或 <code>sz.000001.csv</code></li>
-  <li>确保 CSV 包含列：date, open, high, low, close, volume（amount 可选）</li>
-  <li>修改 <code>config/settings.yaml</code> 中的 <code>data_format</code>：
-    <pre><code>data_source:
-  data_format: "csv"      # 切换到 CSV 数据源
-  csv_dir: "D:/data"</code></pre>
-  </li>
-</ol>
-<p>修改后 train.py / daily_run.py / generate_charts.py 等全部代码自动使用新数据源，无需任何改动。</p>
-
-<h4>Q12: 如何在 CSV / Parquet / Qlib 之间切换数据源？</h4>
-<p>只需修改 <code>config/settings.yaml</code> 中的 <code>data_source.data_format</code>：</p>
-<pre><code># CSV 自有数据
-data_source:
-  data_format: "csv"
-  csv_dir: "D:/data"
-
-# Parquet 格式
-data_source:
-  data_format: "parquet"
-  parquet_dir: "d:/project/qlib-stock/stock-ai/data/daily"
-
-# Qlib bin 格式
-data_source:
-  data_format: "qlib"
-  qlib_dir: "d:/project/qlib-stock/qlib_data/cn_data"</code></pre>
-<p>DataStore 统一接口会自动创建对应后端，上层代码完全透明。</p>
-
-<h4>Q11: Qlib 分析模块报错怎么办？</h4>
-<p>Qlib 0.9.7 与 numpy 2.x 存在已知兼容性问题（<code>np.isclose</code> 参数类型错误）。推荐方案：</p>
-<ol>
-  <li><strong>推荐</strong>：使用项目自有的 <code>generate_charts.py</code> 生成图表，不依赖 Qlib 的分析模块</li>
-  <li><strong>可选</strong>：降级 numpy：<code>pip install numpy&lt;2</code>，然后运行 <code>run_qlib_workflow.py</code></li>
-</ol>
-
-<h3 id="known-issues">10.9 已知问题与兼容性</h3>
+<h3 id="known-issues">9.1 已知问题与兼容性</h3>
 <div class="table-wrap">
 <table>
 <thead><tr><th>问题</th><th>原因</th><th>解决方案</th></tr></thead>
 <tbody>
-<tr><td>Qlib <code>np.isclose()</code> 报错</td><td>Qlib 0.9.7 与 numpy 2.x 不兼容</td><td>使用 <code>generate_charts.py</code> 或降级 numpy</td></tr>
-<tr><td>Label merge 日期类型错误</td><td>object 与 datetime64 混用</td><td>已在 <code>label_generator.py</code> 修复</td></tr>
+<tr><td>Qlib 0.9.7 + numpy 2.x 兼容性</td><td>废弃 API 变更</td><td><code>numpy_compat.py</code> 补丁已修复</td></tr>
+<tr><td>Windows 多进程报错</td><td>Qlib 默认多进程</td><td><code>init_qlib_env()</code> 自动切换单线程</td></tr>
+<tr><td>Kaleido 图表超时</td><td>Chrome 启动慢</td><td>重试或降低图表复杂度</td></tr>
 <tr><td>CSV 列名含中文</td><td>AKShare 原始中文列名</td><td><code>CsvDataLoader</code> 自动标准化映射</td></tr>
-<tr><td>数据不足警告</td><td>股票上市时间太短</td><td>正常警告，系统会自动跳过</td></tr>
 </tbody>
 </table>
 </div>
 
 <div class="footer">
-  <p>A股中长线AI量化选股系统 v1.0 | 技术文档 | 2026-06-27</p>
-  <p style="margin-top:0.5rem; font-size:0.75rem;">本文档由系统自动生成，如有疑问请参考源码注释或提交 Issue</p>
+  <p>A股中长线AI量化选股系统 v2.1 | 技术文档 | 2026-06-28</p>
+  <p style="margin-top:0.5rem; font-size:0.75rem;">Qlib Native Pipeline | <a href="factor-model-guide/factor-model-guide.html" target="_blank">因子与模型说明</a> | 本文档由系统自动生成，如有疑问请参考源码注释或提交 Issue</p>
 </div>
 
 </main>
