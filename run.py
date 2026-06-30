@@ -15,7 +15,9 @@ Usage:
 
   # === 数据管理 ===
   python run.py data --download               # 下载 AKShare 数据
-  python run.py data --convert                # CSV 转 Qlib bin
+  python run.py data --convert                # CSV 转 Qlib bin (日线)
+  python run.py data --convert --freq week    # CSV 转 Qlib bin (周线)
+  python run.py data --convert --freq month   # CSV 转 Qlib bin (月线)
   python run.py data --check                  # 检查数据完整性
 
   # === Phase 1: 稳健性 ===
@@ -128,6 +130,9 @@ def parse_args():
     data_parser.add_argument("--csv-dir", type=str, default="D:/data")
     data_parser.add_argument("--qlib-dir", type=str,
                         default="d:/project/qlib-stock/qlib_data/cn_data")
+    data_parser.add_argument("--freq", type=str, default="day",
+                        choices=["day", "week", "month"],
+                        help="数据频率: day(日线) | week(周线) | month(月线)")
 
     # === Phase 1: rolling ===
     rolling_parser = subparsers.add_parser("rolling", help="滚动 Walk-Forward 验证")
@@ -301,7 +306,7 @@ def cmd_data(args):
         download_full_history(sample=args.sample)
     elif args.convert:
         from run_qlib_workflow import create_qlib_bin_data
-        create_qlib_bin_data(Path(args.csv_dir), Path(args.qlib_dir), sample=args.sample)
+        create_qlib_bin_data(Path(args.csv_dir), Path(args.qlib_dir), sample=args.sample, freq=args.freq)
     elif args.check:
         qlib_dir = Path(args.qlib_dir)
         for f in [qlib_dir / "calendars" / "day.txt",

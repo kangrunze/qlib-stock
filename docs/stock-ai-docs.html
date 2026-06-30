@@ -1292,11 +1292,27 @@ python run.py train --handler Alpha360 --experiment my_experiment</code></pre>
 <pre><code># 下载 AKShare 全量历史数据
 python run.py data --download --sample 500
 
-# CSV 转 Qlib bin 格式
+# CSV 转 Qlib bin 格式（日线）
 python run.py data --convert --csv-dir D:/data
 
-# 检查数据完整性
+# CSV 转 Qlib bin 格式（周线）
+python run.py data --convert --freq week
+
+# CSV 转 Qlib bin 格式（月线）
+python run.py data --convert --freq month
+
+# 检查数据完整性（日线+周线+月线）
 python run.py data --check</code></pre>
+
+<div class="callout">
+  <div class="callout-title">周线/月线使用说明</div>
+  <p>使用周线或月线数据需要两步：</p>
+  <ol>
+    <li><strong>转换数据</strong>：<code>python run.py data --convert --freq week</code>（生成 <code>calendars/week.txt</code> + <code>*.week.bin</code>）</li>
+    <li><strong>修改配置</strong>：在 <code>workflow_config.yaml</code> 的 <code>data_handler</code> 段设置 <code>freq: "week"</code></li>
+  </ol>
+  <p>周线因子数不变（Alpha158 仍为 158 个），但因子计算基于周线 OHLCV，更适合中长线策略。</p>
+</div>
 
 <h3 id="usage-params">6.4 参数覆盖</h3>
 

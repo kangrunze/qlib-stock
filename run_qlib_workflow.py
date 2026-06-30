@@ -4,6 +4,7 @@ Qlib 完整工作流脚本
 ====================
 功能:
   1. 将 D:\data 目录下的 CSV 数据（sh.XXXXXX.csv / sz.XXXXXX.csv）转换为 Qlib bin 格式
+     支持日线(day)、周线(week)、月线(month) 三种频率
   2. 初始化 Qlib 并运行完整的量化工作流:
      - 使用 Alpha158 特征 + LightGBM 模型
      - 在 CSI300 数据上训练（2008-2020）
@@ -11,9 +12,11 @@ Qlib 完整工作流脚本
      - 生成分析报告图表
 
 用法:
-  python run_qlib_workflow.py                    # 转换全部股票
-  python run_qlib_workflow.py --sample 100       # 仅转换前100只股票（快速测试）
-  python run_qlib_workflow.py --skip-convert     # 跳过数据转换，直接运行工作流
+  python run_qlib_workflow.py                           # 转换全部股票（日线）
+  python run_qlib_workflow.py --sample 100              # 仅转换前100只股票（快速测试）
+  python run_qlib_workflow.py --freq week --sample 100  # 转换为周线
+  python run_qlib_workflow.py --freq month              # 转换为月线
+  python run_qlib_workflow.py --skip-convert            # 跳过数据转换，直接运行工作流
 """
 
 import argparse
@@ -53,15 +56,14 @@ INCLUDE_FIELDS = ["open", "close", "high", "low", "volume", "amount"]
 # 命令行参数
 # ============================================================
 def parse_args():
-    parser = argparse.ArgumentParser(description="Qlib 完整工作流: CSV转bin + 训练 + 回测 + 报告")
-    parser.add_argument(
-        "--sample", type=int, default=None,
-        help="仅转换前 N 只股票数据（用于快速测试）",
-    )
-    parser.add_argument(
-        "--skip-convert", action="store_true",
-        help="跳过 CSV 到 Qlib bin 的转换步骤（使用已有数据）",
-    )
+    parser = argparse.ArgumentParser(description="Qlib 完整工作流")
+    parser.add_argument("--sample", type=int, default=None,
+                        help="仅处理前 N 只股票（快速测试）")
+    parser.add_argument("--skip-convert", action="store_true",
+                        help="跳过数据转换，直接运行工作流")
+    parser.add_argument("--freq", type=str, default="day",
+                        choices=["day", "week", "month"],
+                        help="数据频率: day(日线) | week(周线) | month(月线)")
     return parser.parse_args()
 
 
@@ -136,33 +138,83 @@ def read_and_normalize_csv(csv_path: Path) -> pd.DataFrame:
     return df
 
 
-def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
+def resample_daily_to_freq(df: pd.DataFrame, freq: str = "week") -> pd.DataFrame:
     """
-    将 CSV 数据转换为 Qlib bin 格式
+    将日线 OHLCV 数据重采样为周线/月线。
+
+    重采样规则：
+      - open:  周期内第一个交易日的开盘价
+      - high:  周期内最高价
+      - low:   周期内最低价
+      - close: 周期内最后一个交易日的收盘价
+      - volume: 周期内成交量之和
+      - amount: 周期内成交额之和
+
+    Args:
+        df: 日线数据，必须包含 datetime, open, high, low, close, volume 列
+        freq: "week" 或 "month"
+
+    Returns:
+        重采样后的 DataFrame
+    """
+    if freq not in ("week", "month"):
+        return df
+
+    if "datetime" not in df.columns:
+        return df
+
+    df = df.copy()
+    df = df.set_index("datetime").sort_index()
+
+    # 确定重采样锚点
+    resample_rule = "W-FRI" if freq == "week" else "ME"
+
+    resampled = df.resample(resample_rule).agg({
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+        "amount": "sum",
+    })
+
+    # 也保留 code 列（如果有的话）
+    if "code" in df.columns:
+        code_val = df["code"].iloc[0]
+        resampled["code"] = code_val
+
+    # 重置索引，恢复 datetime 列
+    resampled = resampled.reset_index()
+
+    # 移除含有 NaN 的行（首尾可能不完整）
+    resampled = resampled.dropna()
+
+    return resampled
+
+
+def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None, freq: str = "day"):
+    """
+    将 CSV 数据转换为 Qlib bin 格式（支持日线/周线/月线）。
 
     Qlib bin 格式目录结构:
       qlib_dir/
         calendars/
-          day.txt               -- 交易日历（每行一个日期 YYYY-MM-DD）
+          {freq}.txt            -- 交易日历（每行一个日期 YYYY-MM-DD）
         instruments/
-          all.txt               -- 所有股票代码列表（每行一个代码）
-          csi300.txt            -- CSI300 成分股（标记为可用）
+          all.txt               -- 所有股票代码列表
+          csi300.txt            -- CSI300 成分股
         features/
           <code>/
-            <field>.day.bin     -- 每个特征一个文件, float32 格式, 按日期顺序排列
-
-    每个特征 bin 文件格式:
-      - 所有日期连续排列
-      - 每个日期对应 4 字节 float32 值
-      - 日期顺序与 calendar 一致
+            <field>.{freq}.bin  -- 每个特征一个文件, float32 格式
 
     Args:
-        csv_dir: CSV 数据源目录
+        csv_dir: CSV 数据源目录（日线数据）
         qlib_dir: Qlib 数据输出目录
         sample: 限制股票数量
+        freq: 数据频率: "day" | "week" | "month"
     """
     logger.info("=" * 60)
-    logger.info("第一步: CSV 数据转换为 Qlib bin 格式")
+    logger.info("第一步: CSV 数据转换为 Qlib bin 格式 (频率: %s)", freq)
     logger.info("=" * 60)
 
     # 确保目录结构
@@ -183,10 +235,12 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
     failed_files = []
     total_date_set = set()
 
+    # 周线/月线的最小数据量要求（日线 500 → 周线 100 → 月线 24）
+    min_rows = {"day": 500, "week": 100, "month": 24}.get(freq, 500)
+
     for csv_path in csv_files:
         code = extract_stock_code(csv_path.stem)
 
-        # 校验代码格式
         if len(code) != 6 or not code.isdigit():
             logger.debug("跳过无效文件名: %s (代码=%s)", csv_path.name, code)
             continue
@@ -194,7 +248,6 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
         try:
             df = read_and_normalize_csv(csv_path)
 
-            # 检查必要列
             required = ["datetime"] + INCLUDE_FIELDS
             missing = [c for c in required if c not in df.columns]
             if missing:
@@ -202,16 +255,21 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
                 failed_files.append(csv_path.name)
                 continue
 
-            # 去除空值行
             df = df.dropna(subset=["datetime"]).copy()
             df = df.sort_values("datetime").reset_index(drop=True)
 
-            # 过滤数据太少的股票（Qlib Alpha158 需要 >= 500 个交易日）
-            if len(df) < 500:
-                logger.debug("跳过 %s: 仅有 %d 行数据 (< 500)", code, len(df))
+            # 周线/月线: 先重采样
+            if freq != "day":
+                df = resample_daily_to_freq(df, freq)
+                if df is None or len(df) == 0:
+                    logger.debug("跳过 %s: 重采样后无数据", code)
+                    continue
+
+            # 过滤数据太少的股票
+            if len(df) < min_rows:
+                logger.debug("跳过 %s: 仅有 %d 行数据 (< %d)", code, len(df), min_rows)
                 continue
 
-            # 收集日期
             for dt in df["datetime"]:
                 total_date_set.add(pd.Timestamp(dt).strftime("%Y-%m-%d"))
 
@@ -226,14 +284,15 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
         logger.error("没有可用数据，退出")
         sys.exit(1)
 
-    # 构建交易日历（排序后的所有唯一日期）
+    # 构建交易日历
     all_dates = sorted(total_date_set)
     date_index = {d: i for i, d in enumerate(all_dates)}
 
-    logger.info("交易日范围: %s ~ %s, 共 %d 个交易日",
-                all_dates[0], all_dates[-1], len(all_dates))
+    logger.info("交易日范围: %s ~ %s, 共 %d 个 %s 周期",
+                all_dates[0], all_dates[-1], len(all_dates),
+                {"day": "交易日", "week": "周", "month": "月"}.get(freq, "周期"))
 
-    # 清空 features 目录，避免残留旧格式的 bin 文件
+    # 清空旧 features 目录
     if features_dir.exists():
         import shutil
         shutil.rmtree(features_dir)
@@ -246,26 +305,22 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
         stock_dir = features_dir / code
         stock_dir.mkdir(parents=True, exist_ok=True)
 
-        # 建立日期到值索引的映射
         date_value_map = {}
         for _, row in df.iterrows():
             dt_str = pd.Timestamp(row["datetime"]).strftime("%Y-%m-%d")
             date_value_map[dt_str] = row
 
-        # 找到该股票在日历中第一个有数据的日期索引
         sorted_data_dates = sorted(
             dt_str for dt_str in date_value_map if dt_str in date_index
         )
         if not sorted_data_dates:
-            logger.warning("股票 %s 没有在日历范围内有效日期的数据, 跳过", code)
+            logger.warning("股票 %s 没有有效日期数据, 跳过", code)
             continue
         first_date_idx = date_index[sorted_data_dates[0]]
 
-        # 写入每个特征文件
         for field in INCLUDE_FIELDS:
-            bin_path = stock_dir / f"{field}.day.bin"
+            bin_path = stock_dir / f"{field}.{freq}.bin"
 
-            # 创建完整日期数组，缺失日期用 NaN 填充
             values = np.full(len(all_dates), np.nan, dtype=np.float32)
             for dt_str, idx in date_index.items():
                 if dt_str in date_value_map:
@@ -273,9 +328,6 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
                     if pd.notna(val):
                         values[idx] = float(val)
 
-            # 写入二进制文件: Qlib FileStorage 格式为
-            # [start_index(float32), value_0(float32), value_1(float32), ...]
-            # start_index 是该股票第一个有数据在日历中的索引位置
             bin_data = np.hstack([first_date_idx, values]).astype("<f")
             with open(bin_path, "wb") as f:
                 bin_data.tofile(f)
@@ -283,11 +335,11 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
     logger.info("bin 文件写入完成: %d 只股票, %d 个特征", len(all_data), len(INCLUDE_FIELDS))
 
     # 写入交易日历
-    calendar_path = calendars_dir / "day.txt"
+    calendar_path = calendars_dir / f"{freq}.txt"
     with open(calendar_path, "w", encoding="utf-8") as f:
         for d in all_dates:
             f.write(f"{d}\n")
-    logger.info("交易日历已写入: %s (%d 天)", calendar_path, len(all_dates))
+    logger.info("交易日历已写入: %s (%d 个周期)", calendar_path, len(all_dates))
 
     # 写入 instruments 文件
     codes_list = sorted(all_data.keys())
@@ -346,7 +398,7 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None):
 # ============================================================
 # 第二步: 初始化 Qlib 并运行工作流
 # ============================================================
-def run_qlib_workflow(provider_uri: str, chart_dir: Path):
+def run_qlib_workflow(provider_uri: str, chart_dir: Path, freq: str = "day"):
     """
     运行完整的 Qlib 工作流:
       1. 初始化 Qlib
@@ -413,6 +465,7 @@ def run_qlib_workflow(provider_uri: str, chart_dir: Path):
         "fit_start_time": "2008-01-01",
         "fit_end_time": "2020-12-31",
         "instruments": market,
+        "freq": freq,
     }
 
     task = {
@@ -730,7 +783,7 @@ def main():
     # 第一步: 数据转换
     if not args.skip_convert:
         try:
-            create_qlib_bin_data(CSV_DATA_DIR, QLIB_DATA_DIR, sample=args.sample)
+            create_qlib_bin_data(CSV_DATA_DIR, QLIB_DATA_DIR, sample=args.sample, freq=args.freq)
         except Exception as e:
             logger.error("数据转换失败: %s", e, exc_info=True)
             sys.exit(1)
@@ -748,6 +801,7 @@ def main():
         run_qlib_workflow(
             provider_uri=str(QLIB_DATA_DIR),
             chart_dir=CHART_OUTPUT_DIR,
+            freq=args.freq,
         )
     except Exception as e:
         logger.error("Qlib 工作流执行失败: %s", e, exc_info=True)

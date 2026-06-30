@@ -51,12 +51,13 @@ def build_task(config: dict) -> dict:
         task dict for Qlib workflow
     """
     handler = config.get("dataset", {}).get("handler", "Alpha158")
+    handler_cfg = config.get("data_handler", {}).copy()
 
     # Data handler
     handler_cfg = {
         "class": handler,
         "module_path": "qlib.contrib.data.handler",
-        "kwargs": config.get("data_handler", {}),
+        "kwargs": handler_cfg,
     }
 
     # Segments
