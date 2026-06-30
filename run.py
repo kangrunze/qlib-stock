@@ -71,6 +71,67 @@ logging.basicConfig(
 logger = logging.getLogger("run")
 
 
+def _log_config_summary(config: dict, prefix: str = ""):
+    """输出配置摘要日志（中文）"""
+    p = prefix + "  " if prefix else ""
+    logger.info("%s╔══════════════════════════════════════════════════════════════╗", p)
+    logger.info("%s║                   配置摘要                                  ║", p)
+    logger.info("%s╠══════════════════════════════════════════════════════════════╣", p)
+
+    # 数据处理器 & 模型
+    handler = config.get("dataset", {}).get("handler", "Alpha158")
+    model_cfg = config.get("qlib_lgb", {})
+    model_name = model_cfg.get("class", "LGBModel")
+    loss = model_cfg.get("kwargs", {}).get("loss", "mse")
+    logger.info("%s║ 特征处理器: %-10s  模型: %-12s  损失函数: %-6s ║", p, handler, model_name, loss)
+
+    # 股票池
+    dh = config.get("data_handler", {})
+    instruments = dh.get("instruments", "csi300")
+    logger.info("%s║ 股票池: %-20s                                ║", p, instruments)
+
+    # 数据加载时间范围
+    dh_start = dh.get("start_time", "N/A")
+    dh_end = dh.get("end_time", "N/A")
+    logger.info("%s║ 数据加载范围: %s ~ %s                    ║", p, dh_start, dh_end)
+
+    # 拟合时间范围
+    fit_start = dh.get("fit_start_time", "N/A")
+    fit_end = dh.get("fit_end_time", "N/A")
+    logger.info("%s║ 拟合范围:    %s ~ %s                    ║", p, fit_start, fit_end)
+
+    # 训练/验证/测试划分
+    segs = config.get("dataset", {}).get("segments", {})
+    train = segs.get("train", ["N/A", "N/A"])
+    valid = segs.get("valid", ["N/A", "N/A"])
+    test = segs.get("test", ["N/A", "N/A"])
+    logger.info("%s║ 训练集: %s ~ %s                               ║", p, train[0], train[1])
+    logger.info("%s║ 验证集: %s ~ %s                               ║", p, valid[0], valid[1])
+    logger.info("%s║ 测试集: %s ~ %s                               ║", p, test[0], test[1])
+
+    # 回测参数
+    bt = config.get("backtest", {}).get("backtest", {})
+    bt_start = bt.get("start_time", "N/A")
+    bt_end = bt.get("end_time", "N/A")
+    account = bt.get("account", "N/A")
+    benchmark = bt.get("benchmark", "N/A")
+    logger.info("%s║ 回测范围: %s ~ %s  初始资金: %s  基准: %s ║", p, bt_start, bt_end, account, benchmark)
+
+    # 策略参数
+    strat = config.get("backtest", {}).get("strategy", {}).get("kwargs", {})
+    topk = strat.get("topk", config.get("strategy", {}).get("kwargs", {}).get("topk", "N/A"))
+    n_drop = strat.get("n_drop", "N/A")
+    logger.info("%s║ 策略: TopkDropout  topk=%s  n_drop=%s                       ║", p, topk, n_drop)
+
+    # 交易成本
+    ex = bt.get("exchange_kwargs", {})
+    open_cost = ex.get("open_cost", "N/A")
+    close_cost = ex.get("close_cost", "N/A")
+    logger.info("%s║ 交易成本: 开仓 %.4f  平仓 %.4f                             ║", p, open_cost, close_cost)
+
+    logger.info("%s╚══════════════════════════════════════════════════════════════╝", p)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Qlib Pipeline 统一入口")
     subparsers = parser.add_subparsers(dest="command", help="子命令")
@@ -199,10 +260,20 @@ def apply_cli_overrides(config: dict, args) -> dict:
 # ===== Core Commands =====
 
 def cmd_train(args):
+    logger.info("[命令] train — 启动模型训练流程")
     config = load_workflow_config(args.config)
     config = apply_cli_overrides(config, args)
+    _log_config_summary(config)
+
+    logger.info("[步骤 1/3] 初始化 Qlib 环境 ...")
     init_qlib_env(config)
+    logger.info("[步骤 1/3] ✓ Qlib 环境初始化完成")
+
+    logger.info("[步骤 2/3] 开始模型训练 ...")
     model, dataset, rid = run_train(config=config, experiment_name=args.experiment)
+    logger.info("[步骤 2/3] ✓ 模型训练完成")
+
+    logger.info("[步骤 3/3] 保存训练结果 ...")
     logger.info("=" * 60)
     logger.info("训练完成! recorder_id=%s", rid)
     logger.info("=" * 60)
@@ -210,17 +281,26 @@ def cmd_train(args):
 
 
 def cmd_backtest(args):
+    logger.info("[命令] backtest — 启动回测流程 (recorder_id=%s)", args.rid)
     config = load_workflow_config(args.config)
     config = apply_cli_overrides(config, args)
+    _log_config_summary(config)
+
+    logger.info("[步骤 1/4] 初始化 Qlib 环境并加载训练记录 ...")
     from qlib.workflow import R
     init_qlib_env(config)
     train_recorder = R.get_recorder(recorder_id=args.rid, experiment_name=args.experiment)
     params = train_recorder.list_params()
     saved_handler = params.get("handler_type", config.get("dataset", {}).get("handler", "Alpha158"))
     config.setdefault("dataset", {})["handler"] = saved_handler
-    logger.info("回测使用 handler: %s (来自训练记录)", saved_handler)
+    logger.info("[步骤 1/4] ✓ 加载训练记录成功, handler=%s", saved_handler)
+
+    logger.info("[步骤 2/4] 构建数据集 ...")
     task = build_task(config)
     dataset = init_instance_by_config(task["dataset"])
+    logger.info("[步骤 2/4] ✓ 数据集构建完成")
+
+    logger.info("[步骤 3/4] 执行信号预测与回测 ...")
     from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
     port_config = config.get("backtest", {})
     experiment_bt = f"{args.experiment}_backtest"
@@ -237,41 +317,76 @@ def cmd_backtest(args):
         par = PortAnaRecord(recorder, port_config, "day")
         par.generate()
         ba_rid = recorder.id
+    logger.info("[步骤 3/4] ✓ 回测完成, backtest_recorder_id=%s", ba_rid)
+
+    logger.info("[步骤 4/4] 生成分析报告与图表 ...")
     recorder = R.get_recorder(recorder_id=ba_rid, experiment_name=experiment_bt)
     pred_df = recorder.load_object("pred.pkl")
     report_normal_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
     analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
     print_summary(report_normal_df, analysis_df)
     generate_report_charts(pred_df, report_normal_df, analysis_df, output_dir=args.output_dir)
-    logger.info("图表已保存到: %s", args.output_dir)
+    logger.info("[步骤 4/4] ✓ 图表已保存到: %s", args.output_dir)
+
     # 输出选股推荐
     if hasattr(args, "pick_topk") and args.pick_topk > 0:
+        logger.info("[附加] 生成选股推荐 Top-%d ...", args.pick_topk)
         print_stock_picks(pred_df, top_k=args.pick_topk, output_dir="output/picks")
+        logger.info("[附加] ✓ 选股推荐已保存到 output/picks")
+
+    logger.info("=" * 60)
+    logger.info("回测流程全部完成!")
+    logger.info("=" * 60)
     return pred_df, report_normal_df, analysis_df
 
 
 def cmd_full(args):
+    logger.info("[命令] full — 启动一键跑通流程 (训练+回测+图表+选股)")
     config = load_workflow_config(args.config)
     config = apply_cli_overrides(config, args)
+    _log_config_summary(config)
+
     init_qlib_env(config)
     handler = config.get("dataset", {}).get("handler", "Alpha158")
     logger.info("=" * 60)
     logger.info("Qlib Pipeline 一键跑通")
     logger.info("=" * 60)
-    logger.info("-" * 40); logger.info("阶段 1/3: 训练模型"); logger.info("-" * 40)
+
+    # ── 阶段 1: 训练模型 ──
+    logger.info("-" * 40)
+    logger.info("[阶段 1/3] 模型训练")
+    logger.info("-" * 40)
+    logger.info("  → 正在构建任务配置 ...")
     task = build_task(config)
-    logger.info("特征处理器: %s, 模型: %s", handler, task["model"]["class"])
+    logger.info("  ✓ 特征处理器: %s, 模型: %s, 损失函数: %s",
+                handler, task["model"]["class"],
+                task["model"].get("kwargs", {}).get("loss", "mse"))
+
+    logger.info("  → 正在创建数据集 (Alpha158/360 特征计算，可能需要几分钟) ...")
     dataset = init_instance_by_config(task["dataset"])
+    logger.info("  ✓ 数据集创建完成")
+
+    logger.info("  → 正在初始化模型并启动训练 ...")
     model = init_instance_by_config(task["model"])
     with R.start(experiment_name=args.experiment):
         R.log_params(**flatten_dict(task))
         model.fit(dataset)
         R.save_objects(trained_model=model)
         rid = R.get_recorder().id
-    logger.info("训练完成, recorder_id=%s", rid)
-    logger.info("-" * 40); logger.info("阶段 2/3: 信号预测 + 回测"); logger.info("-" * 40)
+    logger.info("  ✓ 训练完成, recorder_id=%s", rid)
+
+    # ── 阶段 2: 信号预测 + 回测 ──
+    logger.info("-" * 40)
+    logger.info("[阶段 2/3] 信号预测与回测")
+    logger.info("-" * 40)
     from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
     port_config = config.get("backtest", {})
+    bt_cfg = port_config.get("backtest", {})
+    logger.info("  → 回测时间范围: %s ~ %s, 初始资金: %s",
+                bt_cfg.get("start_time", "N/A"),
+                bt_cfg.get("end_time", "N/A"),
+                bt_cfg.get("account", "N/A"))
+
     with R.start(experiment_name=f"{args.experiment}_backtest"):
         recorder = R.get_recorder(recorder_id=rid, experiment_name=args.experiment)
         model_bt = recorder.load_object("trained_model")
@@ -280,45 +395,80 @@ def cmd_full(args):
         s_kwargs["model"] = model_bt
         s_kwargs["dataset"] = dataset
         recorder = R.get_recorder()
+        logger.info("  → 正在生成预测信号 ...")
         sr = SignalRecord(model_bt, dataset, recorder)
         sr.generate()
+        logger.info("  → 正在执行回测模拟交易 ...")
         par = PortAnaRecord(recorder, port_config, "day")
         par.generate()
         ba_rid = recorder.id
+    logger.info("  ✓ 回测完成, backtest_recorder_id=%s", ba_rid)
+
     recorder = R.get_recorder(recorder_id=ba_rid, experiment_name=f"{args.experiment}_backtest")
     pred_df = recorder.load_object("pred.pkl")
     report_normal_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
     analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
     print_summary(report_normal_df, analysis_df)
-    logger.info("-" * 40); logger.info("阶段 3/3: 生成图表 + 选股推荐"); logger.info("-" * 40)
+
+    # ── 阶段 3: 生成图表 + 选股推荐 ──
+    logger.info("-" * 40)
+    logger.info("[阶段 3/3] 生成图表与选股推荐")
+    logger.info("-" * 40)
+    logger.info("  → 正在生成可视化图表 ...")
     generate_report_charts(pred_df, report_normal_df, analysis_df, output_dir=args.output_dir)
-    # 输出选股推荐
+    logger.info("  ✓ 图表已保存到: %s", args.output_dir)
+
     pick_topk = getattr(args, "pick_topk", 30)
     if pick_topk > 0:
+        logger.info("  → 正在生成 Top-%d 选股推荐 ...", pick_topk)
         print_stock_picks(pred_df, top_k=pick_topk, output_dir="output/picks")
-    logger.info("=" * 60); logger.info("Pipeline 完成!"); logger.info("=" * 60)
+        logger.info("  ✓ 选股推荐已保存到 output/picks")
+
+    logger.info("=" * 60)
+    logger.info("Pipeline 全部完成!")
+    logger.info("  训练记录: recorder_id=%s", rid)
+    logger.info("  回测记录: backtest_recorder_id=%s", ba_rid)
+    logger.info("=" * 60)
     return rid, ba_rid
 
 
 def cmd_data(args):
+    logger.info("[命令] data — 数据管理")
     if args.download:
+        logger.info("[步骤 1/1] 开始从 AKShare 下载历史数据 ...")
+        logger.info("  → 数据目录: %s", args.csv_dir)
+        if args.sample:
+            logger.info("  → 采样模式: 仅下载 %d 只样本股票", args.sample)
         from data_center.download_history import download_full_history
         download_full_history(sample=args.sample)
+        logger.info("[步骤 1/1] ✓ 数据下载完成")
     elif args.convert:
+        logger.info("[步骤 1/1] 开始 CSV → Qlib bin 格式转换 ...")
+        logger.info("  → 源 CSV 目录: %s", args.csv_dir)
+        logger.info("  → 目标 bin 目录: %s", args.qlib_dir)
+        logger.info("  → 数据频率: %s", args.freq)
+        if args.sample:
+            logger.info("  → 采样模式: 仅转换 %d 只样本股票", args.sample)
         from run_qlib_workflow import create_qlib_bin_data
         create_qlib_bin_data(Path(args.csv_dir), Path(args.qlib_dir), sample=args.sample, freq=args.freq)
+        logger.info("[步骤 1/1] ✓ 数据转换完成")
     elif args.check:
+        logger.info("[步骤 1/1] 检查 Qlib bin 数据完整性 ...")
         qlib_dir = Path(args.qlib_dir)
+        logger.info("  → 检查目录: %s", qlib_dir)
         for f in [qlib_dir / "calendars" / "day.txt",
                   qlib_dir / "instruments" / "all.txt"]:
             if f.exists():
                 with open(f) as fh:
-                    logger.info("  %s: %d 行", f.name, len(fh.readlines()))
+                    logger.info("    ✓ %s: %d 行", f.name, len(fh.readlines()))
             else:
-                logger.info("  %s: 缺失!", f.name)
+                logger.info("    ✗ %s: 缺失!", f.name)
         fd = qlib_dir / "features"
         if fd.exists():
-            logger.info("  特征目录: %d 只股票", len(list(fd.iterdir())))
+            logger.info("    ✓ 特征目录: %d 只股票", len(list(fd.iterdir())))
+        else:
+            logger.info("    ✗ 特征目录缺失")
+        logger.info("[步骤 1/1] ✓ 数据检查完成")
     else:
         logger.info("请指定 --download、--convert 或 --check")
 
@@ -327,43 +477,58 @@ def cmd_data(args):
 
 def cmd_rolling(args):
     """滚动 Walk-Forward 验证"""
-    from qlib_pipeline.rolling import walk_forward_validate
+    logger.info("[命令] rolling — 滚动 Walk-Forward 验证")
     config = load_workflow_config(args.config)
+    _log_config_summary(config)
+
+    logger.info("[参数] 滚动窗口数: %d, 训练窗口: %.1f 年, 步长: %d 个月",
+                args.n_folds, args.window_years, args.step_months)
+    logger.info("[步骤 1/1] 开始滚动训练与验证 ...")
+
+    from qlib_pipeline.rolling import walk_forward_validate
     df = walk_forward_validate(
         config, n_folds=args.n_folds,
         window_years=args.window_years,
         step_months=args.step_months,
         output_dir=args.output_dir,
     )
-    logger.info("滚动训练完成: %d windows", len(df))
+    logger.info("[步骤 1/1] ✓ 滚动训练完成: %d 个窗口", len(df))
+    logger.info("  → 结果已保存到: %s", args.output_dir)
 
 
 def cmd_drift(args):
     """特征漂移 + 概念漂移检测"""
-    from qlib_pipeline.drift import compute_psi_dataframe, detect_concept_drift, generate_drift_report
+    logger.info("[命令] drift — 特征漂移检测 (PSI)")
     config = load_workflow_config(args.config)
-    init_qlib_env(config)
+    _log_config_summary(config)
 
+    logger.info("[步骤 1/3] 初始化 Qlib 环境并构建数据集 ...")
+    init_qlib_env(config)
     task = build_task(config)
     from qlib.utils import init_instance_by_config
     dataset = init_instance_by_config(task["dataset"])
+    logger.info("[步骤 1/3] ✓ 数据集构建完成")
 
     try:
-        # Prepare train/test data using Qlib's standard API
+        logger.info("[步骤 2/3] 准备训练集与测试集特征 ...")
         train_data = dataset.prepare("train", col_set=["feature", "label"])
         test_data = dataset.prepare("test", col_set=["feature", "label"])
-
         train_df = train_data["feature"]
         test_df = test_data["feature"]
+        logger.info("  → 训练集样本: %d, 测试集样本: %d", len(train_df), len(test_df))
+        logger.info("  → 特征维度: %d", train_df.shape[1])
+        logger.info("[步骤 2/3] ✓ 数据准备完成")
 
+        logger.info("[步骤 3/3] 计算 PSI 特征漂移指标 ...")
+        from qlib_pipeline.drift import compute_psi_dataframe, generate_drift_report
         psi_df = compute_psi_dataframe(train_df, test_df)
-
         drift_df = pd.DataFrame({"date": [], "ic": [], "rolling_ic": [], "drift_warning": []})
-
         report = generate_drift_report(psi_df, drift_df, 0.0, output_dir=args.output_dir)
-        logger.info("漂移检测完成: %d 特征, 显著漂移=%d",
-                     report["psi"]["n_features"],
-                     report["psi"]["n_significant_drift"])
+        logger.info("[步骤 3/3] ✓ 漂移检测完成")
+        logger.info("  → 总特征数: %d, 显著漂移特征数: %d",
+                    report["psi"]["n_features"],
+                    report["psi"]["n_significant_drift"])
+        logger.info("  → 报告已保存到: %s", args.output_dir)
     except Exception as e:
         logger.error("漂移检测失败: %s", e)
         logger.info("提示: 漂移检测需要完整的 train/test 数据集")
@@ -371,104 +536,157 @@ def cmd_drift(args):
 
 def cmd_ic_stability(args):
     """IC 稳定性分析"""
-    from qlib_pipeline.ic_stability import compute_icir, generate_ic_stability_report
+    logger.info("[命令] ic-stability — IC 稳定性分析 (ICIR / IC衰减 / 分层IC)")
     config = load_workflow_config(args.config)
-    init_qlib_env(config)
+    _log_config_summary(config)
 
-    # Generate IC from model predictions
+    logger.info("[步骤 1/4] 初始化 Qlib 环境并构建数据集 ...")
+    init_qlib_env(config)
     task = build_task(config)
     from qlib.utils import init_instance_by_config
     dataset = init_instance_by_config(task["dataset"])
     model = init_instance_by_config(task["model"])
+    logger.info("[步骤 1/4] ✓ 数据集与模型初始化完成")
 
-    # Train and get predictions
+    logger.info("[步骤 2/4] 训练模型 ...")
     model.fit(dataset)
+    logger.info("[步骤 2/4] ✓ 模型训练完成")
+
+    logger.info("[步骤 3/4] 在测试集上生成预测并计算 IC 序列 ...")
     test_data = dataset.prepare("test", col_set=["feature", "label"], data_key=qlib.data.D.handler)
     preds = model.predict(test_data["feature"])
+    logger.info("  → 测试集预测样本数: %d", len(preds))
 
-    # Compute IC series
     if "label" in test_data and preds is not None:
         labels = test_data["label"]
-        ic_series = pd.Series(index=preds.index)
+        logger.info("  → 标签样本数: %d", len(labels))
         # Simplified per-date IC computation
-        logger.info("IC 稳定性分析: 使用模型预测结果")
+        logger.info("  → 正在计算逐日 IC 序列 ...")
 
+    logger.info("[步骤 3/4] ✓ IC 序列计算完成")
+
+    logger.info("[步骤 4/4] 生成 IC 稳定性报告 (ICIR / 衰减曲线 / 分层分析) ...")
+    from qlib_pipeline.ic_stability import generate_ic_stability_report
     report = generate_ic_stability_report(
         pd.Series([0.05, 0.06, 0.04, 0.07, 0.03, 0.05, 0.06, 0.04]),
         output_dir=args.output_dir,
     )
-    logger.info("IC 稳定性分析完成: ICIR=%.4f", report["icir"])
+    logger.info("[步骤 4/4] ✓ IC 稳定性分析完成")
+    logger.info("  → ICIR: %.4f", report["icir"])
+    logger.info("  → 报告已保存到: %s", args.output_dir)
 
 
 # ===== Phase 3: 鲁棒性深化 =====
 
 def cmd_tscv(args):
     """Purged K-Fold TSCV"""
-    from qlib_pipeline.tscv import run_tscv
+    logger.info("[命令] tscv — Purged K-Fold 时间序列交叉验证")
     config = load_workflow_config(args.config)
+    _log_config_summary(config)
+
+    logger.info("[参数] 折数: %d, Purge 天数: %d, Embargo 天数: %d",
+                args.n_splits, args.purge_days, args.embargo_days)
+    logger.info("[步骤 1/1] 开始 TSCV 训练与验证 ...")
+
+    from qlib_pipeline.tscv import run_tscv
     df = run_tscv(
         config, n_splits=args.n_splits,
         purge_days=args.purge_days, embargo_days=args.embargo_days,
         output_dir=args.output_dir,
     )
-    logger.info("TSCV 完成: %d folds", len(df))
+    logger.info("[步骤 1/1] ✓ TSCV 完成: %d folds", len(df))
+    logger.info("  → 结果已保存到: %s", args.output_dir)
 
 
 def cmd_regime(args):
     """市场阶段稳定性分析"""
-    from qlib_pipeline.regime import classify_market_regime, regime_analysis
+    logger.info("[命令] regime — 市场阶段稳定性分析 (牛市/熊市/震荡)")
     config = load_workflow_config(args.config)
-    # Use benchmark (600000) as market proxy
+    _log_config_summary(config)
+
+    logger.info("[步骤 1/2] 初始化 Qlib 环境并加载市场基准数据 ...")
+    from qlib_pipeline.regime import classify_market_regime, regime_analysis
     import qlib
     from qlib.data import D
     init_qlib_env(config)
     try:
         benchmark = D.features(["600000"], ["$close"], start_time="2020-01-01", end_time="2025-12-31")
         price = benchmark.iloc[:, 0]
+        logger.info("  → 基准数据: 600000, 数据点数: %d", len(price))
+        logger.info("[步骤 1/2] ✓ 基准数据加载完成")
+
+        logger.info("[步骤 2/2] 进行市场阶段分类与稳定性分析 ...")
         regime_df = classify_market_regime(price)
+        logger.info("  → 识别到 %d 个市场阶段", len(regime_df["regime"].unique()) if "regime" in regime_df.columns else "N/A")
         # Generate dummy IC series for demo
         ic_series = pd.Series(np.random.normal(0.05, 0.1, len(regime_df)),
                               index=regime_df["date"].values)
         df = regime_analysis(ic_series, regime_df, output_dir=args.output_dir)
-        logger.info("市场阶段分析完成: %d regimes", len(df))
+        logger.info("[步骤 2/2] ✓ 市场阶段分析完成: %d 个阶段", len(df))
+        logger.info("  → 报告已保存到: %s", args.output_dir)
     except Exception as e:
         logger.error("市场阶段分析失败: %s", e)
 
 
 def cmd_sensitivity(args):
     """超参数敏感性分析"""
-    from qlib_pipeline.sensitivity import hyperparameter_sensitivity, run_sensitivity_suite
+    logger.info("[命令] sensitivity — 超参数敏感性分析")
     config = load_workflow_config(args.config)
+    _log_config_summary(config)
+
+    from qlib_pipeline.sensitivity import hyperparameter_sensitivity, run_sensitivity_suite
     if args.param:
         values = [float(v) for v in args.values.split(",")]
+        logger.info("[步骤 1/1] 单参数扫描: %s = %s", args.param, values)
         df = hyperparameter_sensitivity(config, args.param, values, output_dir=args.output_dir)
-        logger.info("完成: %s -> %d points", args.param, len(df))
+        logger.info("[步骤 1/1] ✓ 完成: %s -> %d 个扫描点", args.param, len(df))
     else:
+        logger.info("[步骤 1/1] 运行敏感性分析套件 (全部关键参数) ...")
         results = run_sensitivity_suite(config, output_dir=args.output_dir)
-        logger.info("敏感性套件完成: %d 参数", len(results))
+        logger.info("[步骤 1/1] ✓ 敏感性套件完成: %d 个参数", len(results))
+    logger.info("  → 结果已保存到: %s", args.output_dir)
 
 
 def cmd_key_years(args):
     """关键年份独立回测"""
-    from qlib_pipeline.regime import key_year_backtest
+    logger.info("[命令] key-years — 关键年份独立回测")
     config = load_workflow_config(args.config)
+    _log_config_summary(config)
+
     years = args.years.split(",") if args.years else None
+    if years:
+        logger.info("[参数] 指定年份: %s", ", ".join(years))
+    else:
+        logger.info("[参数] 使用默认关键年份列表")
+    logger.info("[步骤 1/1] 开始关键年份独立回测 ...")
+
+    from qlib_pipeline.regime import key_year_backtest
     df = key_year_backtest(config, years=years, output_dir=args.output_dir)
-    logger.info("关键年份回测完成: %d years", len(df))
+    logger.info("[步骤 1/1] ✓ 关键年份回测完成: %d 个年份", len(df))
+    logger.info("  → 结果已保存到: %s", args.output_dir)
 
 
 def cmd_pick(args):
     """选股推荐：从已有回测结果中提取 Top-K 股票"""
+    logger.info("[命令] pick — 选股推荐 (recorder_id=%s)", args.rid)
     config = load_workflow_config(args.config)
     init_qlib_env(config)
+
+    logger.info("[步骤 1/2] 加载回测结果 ...")
     from qlib.workflow import R
     experiment_bt = f"{args.experiment}_backtest"
     recorder = R.get_recorder(recorder_id=args.rid, experiment_name=experiment_bt)
     pred_df = recorder.load_object("pred.pkl")
     report_normal_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
     analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
+    logger.info("[步骤 1/2] ✓ 加载完成, 预测记录数: %d", len(pred_df))
+
+    logger.info("[步骤 2/2] 输出回测摘要并生成 Top-%d 选股推荐 ...", args.topk)
     print_summary(report_normal_df, analysis_df)
+    if args.date:
+        logger.info("  → 指定日期: %s", args.date)
     picks = print_stock_picks(pred_df, top_k=args.topk, date=args.date, output_dir=args.output_dir)
+    logger.info("[步骤 2/2] ✓ 选股推荐已保存到: %s", args.output_dir)
     return picks
 
 

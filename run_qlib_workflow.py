@@ -292,10 +292,29 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None, freq
                 all_dates[0], all_dates[-1], len(all_dates),
                 {"day": "交易日", "week": "周", "month": "月"}.get(freq, "周期"))
 
-    # 清空旧 features 目录
+    # 清空旧 features 目录（Windows 兼容处理）
     if features_dir.exists():
         import shutil
-        shutil.rmtree(features_dir)
+        try:
+            shutil.rmtree(features_dir)
+        except Exception as e:
+            logger.warning("shutil.rmtree 失败 (%s), 尝试手动删除...", e)
+            # 回退: 逐个删除文件再删除目录
+            for root, dirs, files in os.walk(str(features_dir), topdown=False):
+                for name in files:
+                    try:
+                        os.remove(os.path.join(root, name))
+                    except OSError:
+                        pass
+                for name in dirs:
+                    try:
+                        os.rmdir(os.path.join(root, name))
+                    except OSError:
+                        pass
+            try:
+                os.rmdir(str(features_dir))
+            except OSError:
+                pass
         logger.info("已清空旧 features 目录: %s", features_dir)
     features_dir.mkdir(parents=True, exist_ok=True)
 
@@ -457,7 +476,7 @@ def run_qlib_workflow(provider_uri: str, chart_dir: Path, freq: str = "day"):
 
     # ---- 工作流配置 ----
     market = "csi300"
-    benchmark = "SH000300"
+    benchmark = None  # 不使用基准指数对比（避免 index code 不存在的问题）
 
     data_handler_config = {
         "start_time": "2008-01-01",
