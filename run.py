@@ -265,13 +265,30 @@ def cmd_train(args):
     config = apply_cli_overrides(config, args)
     _log_config_summary(config)
 
-    logger.info("[步骤 1/3] 初始化 Qlib 环境 ...")
-    init_qlib_env(config)
-    logger.info("[步骤 1/3] ✓ Qlib 环境初始化完成")
+    # ── 数据预检 ──
+    if not _check_data_availability(config):
+        logger.error("数据预检未通过，流程终止。请先准备数据后再运行。")
+        logger.error("  数据准备命令: python run.py data --convert")
+        return
 
-    logger.info("[步骤 2/3] 开始模型训练 ...")
-    model, dataset, rid = run_train(config=config, experiment_name=args.experiment)
-    logger.info("[步骤 2/3] ✓ 模型训练完成")
+    try:
+        logger.info("[步骤 1/3] 初始化 Qlib 环境 ...")
+        init_qlib_env(config)
+        logger.info("[步骤 1/3] ✓ Qlib 环境初始化完成")
+    except Exception as e:
+        logger.error("Qlib 环境初始化失败: %s", e)
+        logger.error("  → 请检查 workflow_config.yaml 中的 qlib.provider_uri 路径")
+        return
+
+    try:
+        logger.info("[步骤 2/3] 开始模型训练 ...")
+        model, dataset, rid = run_train(config=config, experiment_name=args.experiment)
+        logger.info("[步骤 2/3] ✓ 模型训练完成")
+    except Exception as e:
+        logger.error("[步骤 2/3] 模型训练失败: %s", e)
+        logger.error("  → 排查: 运行 python run.py data --check 确认数据完整性")
+        logger.error("  → 检查 workflow_config.yaml 中时间段配置是否在数据范围内")
+        raise
 
     logger.info("[步骤 3/3] 保存训练结果 ...")
     logger.info("=" * 60)
@@ -340,89 +357,181 @@ def cmd_backtest(args):
     return pred_df, report_normal_df, analysis_df
 
 
+def _check_data_availability(config: dict) -> bool:
+    """检查 Qlib bin 数据是否可用，缺失时给出明确提示"""
+    import qlib
+    provider_uri = config.get("qlib", {}).get("provider_uri", "")
+    provider_path = Path(provider_uri)
+
+    # 检查 1: 数据目录是否存在
+    if not provider_path.exists():
+        logger.error("数据目录不存在: %s", provider_path)
+        logger.error("  → 请先运行: python run.py data --convert")
+        return False
+
+    # 检查 2: 日历文件
+    cal_file = provider_path / "calendars" / "day.txt"
+    if not cal_file.exists():
+        logger.error("交易日历缺失: %s", cal_file)
+        logger.error("  → 请先运行: python run.py data --convert")
+        return False
+    with open(cal_file) as f:
+        cal_lines = len(f.readlines())
+    if cal_lines < 10:
+        logger.error("交易日历数据过少（仅 %d 行），数据可能不完整", cal_lines)
+        logger.error("  → 请检查 CSV 原始数据是否充足")
+        return False
+
+    # 检查 3: 股票列表
+    inst_file = provider_path / "instruments" / "all.txt"
+    if not inst_file.exists():
+        logger.error("股票列表缺失: %s", inst_file)
+        logger.error("  → 请先运行: python run.py data --convert")
+        return False
+    with open(inst_file) as f:
+        stock_lines = len(f.readlines())
+
+    # 检查 4: features 目录
+    features_dir = provider_path / "features"
+    if not features_dir.exists() or not any(features_dir.iterdir()):
+        logger.error("特征目录为空: %s", features_dir)
+        logger.error("  → 请先运行: python run.py data --convert")
+        return False
+    stock_count = len([d for d in features_dir.iterdir() if d.is_dir()])
+
+    logger.info("[数据预检] ✓ 数据可用: %d 只股票, %d 个交易日", stock_count, cal_lines)
+    return True
+
+
 def cmd_full(args):
     logger.info("[命令] full — 启动一键跑通流程 (训练+回测+图表+选股)")
     config = load_workflow_config(args.config)
     config = apply_cli_overrides(config, args)
     _log_config_summary(config)
 
-    init_qlib_env(config)
+    # ── 数据预检 ──
+    if not _check_data_availability(config):
+        logger.error("数据预检未通过，流程终止。请先准备数据后再运行。")
+        logger.error("  数据准备命令: python run.py data --convert")
+        return
+
+    try:
+        init_qlib_env(config)
+    except Exception as e:
+        logger.error("Qlib 环境初始化失败: %s", e)
+        logger.error("  → 请检查 workflow_config.yaml 中的 qlib.provider_uri 路径是否正确")
+        logger.error("  → 请确认已运行: python run.py data --convert")
+        return
+
     handler = config.get("dataset", {}).get("handler", "Alpha158")
     logger.info("=" * 60)
     logger.info("Qlib Pipeline 一键跑通")
     logger.info("=" * 60)
 
+    rid = None
+    ba_rid = None
+
     # ── 阶段 1: 训练模型 ──
-    logger.info("-" * 40)
-    logger.info("[阶段 1/3] 模型训练")
-    logger.info("-" * 40)
-    logger.info("  → 正在构建任务配置 ...")
-    task = build_task(config)
-    logger.info("  ✓ 特征处理器: %s, 模型: %s, 损失函数: %s",
-                handler, task["model"]["class"],
-                task["model"].get("kwargs", {}).get("loss", "mse"))
+    try:
+        logger.info("-" * 40)
+        logger.info("[阶段 1/3] 模型训练")
+        logger.info("-" * 40)
+        logger.info("  → 正在构建任务配置 ...")
+        task = build_task(config)
+        logger.info("  ✓ 特征处理器: %s, 模型: %s, 损失函数: %s",
+                    handler, task["model"]["class"],
+                    task["model"].get("kwargs", {}).get("loss", "mse"))
 
-    logger.info("  → 正在创建数据集 (Alpha158/360 特征计算，可能需要几分钟) ...")
-    dataset = init_instance_by_config(task["dataset"])
-    logger.info("  ✓ 数据集创建完成")
+        logger.info("  → 正在创建数据集 (Alpha158/360 特征计算，可能需要几分钟) ...")
+        dataset = init_instance_by_config(task["dataset"])
+        logger.info("  ✓ 数据集创建完成")
 
-    logger.info("  → 正在初始化模型并启动训练 ...")
-    model = init_instance_by_config(task["model"])
-    with R.start(experiment_name=args.experiment):
-        R.log_params(**flatten_dict(task))
-        model.fit(dataset)
-        R.save_objects(trained_model=model)
-        rid = R.get_recorder().id
-    logger.info("  ✓ 训练完成, recorder_id=%s", rid)
+        logger.info("  → 正在初始化模型并启动训练 ...")
+        model = init_instance_by_config(task["model"])
+        with R.start(experiment_name=args.experiment):
+            R.log_params(**flatten_dict(task))
+            model.fit(dataset)
+            R.save_objects(trained_model=model)
+            rid = R.get_recorder().id
+        logger.info("  ✓ 训练完成, recorder_id=%s", rid)
+    except Exception as e:
+        logger.error("[阶段 1/3] 模型训练失败: %s", e)
+        logger.error("  → 可能原因: 数据范围与时间段配置不匹配，或内存不足")
+        logger.error("  → 排查建议:")
+        logger.error("      1. 运行 python run.py data --check 确认数据完整性")
+        logger.error("      2. 检查 workflow_config.yaml 中 data_handler.end_time 是否超出数据范围")
+        logger.error("      3. 检查 dataset.segments 的 train/valid/test 是否在数据范围内")
+        raise
 
     # ── 阶段 2: 信号预测 + 回测 ──
-    logger.info("-" * 40)
-    logger.info("[阶段 2/3] 信号预测与回测")
-    logger.info("-" * 40)
-    from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
-    port_config = config.get("backtest", {})
-    bt_cfg = port_config.get("backtest", {})
-    logger.info("  → 回测时间范围: %s ~ %s, 初始资金: %s",
-                bt_cfg.get("start_time", "N/A"),
-                bt_cfg.get("end_time", "N/A"),
-                bt_cfg.get("account", "N/A"))
+    try:
+        logger.info("-" * 40)
+        logger.info("[阶段 2/3] 信号预测与回测")
+        logger.info("-" * 40)
+        from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
+        port_config = config.get("backtest", {})
+        bt_cfg = port_config.get("backtest", {})
+        logger.info("  → 回测时间范围: %s ~ %s, 初始资金: %s",
+                    bt_cfg.get("start_time", "N/A"),
+                    bt_cfg.get("end_time", "N/A"),
+                    bt_cfg.get("account", "N/A"))
 
-    with R.start(experiment_name=f"{args.experiment}_backtest"):
-        recorder = R.get_recorder(recorder_id=rid, experiment_name=args.experiment)
-        model_bt = recorder.load_object("trained_model")
-        port_config = port_config.copy()
-        s_kwargs = port_config.setdefault("strategy", {}).setdefault("kwargs", {})
-        s_kwargs["model"] = model_bt
-        s_kwargs["dataset"] = dataset
-        recorder = R.get_recorder()
-        logger.info("  → 正在生成预测信号 ...")
-        sr = SignalRecord(model_bt, dataset, recorder)
-        sr.generate()
-        logger.info("  → 正在执行回测模拟交易 ...")
-        par = PortAnaRecord(recorder, port_config, "day")
-        par.generate()
-        ba_rid = recorder.id
-    logger.info("  ✓ 回测完成, backtest_recorder_id=%s", ba_rid)
-
-    recorder = R.get_recorder(recorder_id=ba_rid, experiment_name=f"{args.experiment}_backtest")
-    pred_df = recorder.load_object("pred.pkl")
-    report_normal_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
-    analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
-    print_summary(report_normal_df, analysis_df)
+        with R.start(experiment_name=f"{args.experiment}_backtest"):
+            recorder = R.get_recorder(recorder_id=rid, experiment_name=args.experiment)
+            model_bt = recorder.load_object("trained_model")
+            port_config = port_config.copy()
+            s_kwargs = port_config.setdefault("strategy", {}).setdefault("kwargs", {})
+            s_kwargs["model"] = model_bt
+            s_kwargs["dataset"] = dataset
+            recorder = R.get_recorder()
+            logger.info("  → 正在生成预测信号 ...")
+            sr = SignalRecord(model_bt, dataset, recorder)
+            sr.generate()
+            logger.info("  → 正在执行回测模拟交易 ...")
+            par = PortAnaRecord(recorder, port_config, "day")
+            par.generate()
+            ba_rid = recorder.id
+        logger.info("  ✓ 回测完成, backtest_recorder_id=%s", ba_rid)
+    except Exception as e:
+        logger.error("[阶段 2/3] 信号预测与回测失败: %s", e)
+        if "benchmark" in str(e).lower():
+            logger.error("  → 基准股票不存在，请修改 workflow_config.yaml:")
+            logger.error("      backtest.backtest.benchmark 改为一个真实存在的股票代码（如 '600000'）")
+        elif "index" in str(e).lower():
+            logger.error("  → 回测日期超出日历范围，请修改 backtest.backtest.end_time")
+        else:
+            logger.error("  → 排查建议:")
+            logger.error("      1. 确认训练已完成（recorder_id=%s）", rid)
+            logger.error("      2. 检查 backtest 配置的时间范围和基准设置")
+        logger.info("  → 训练结果仍可用，可单独重跑回测:")
+        logger.info("      python run.py backtest --rid %s", rid if rid else "<recorder_id>")
+        raise
 
     # ── 阶段 3: 生成图表 + 选股推荐 ──
-    logger.info("-" * 40)
-    logger.info("[阶段 3/3] 生成图表与选股推荐")
-    logger.info("-" * 40)
-    logger.info("  → 正在生成可视化图表 ...")
-    generate_report_charts(pred_df, report_normal_df, analysis_df, output_dir=args.output_dir)
-    logger.info("  ✓ 图表已保存到: %s", args.output_dir)
+    try:
+        recorder = R.get_recorder(recorder_id=ba_rid, experiment_name=f"{args.experiment}_backtest")
+        pred_df = recorder.load_object("pred.pkl")
+        report_normal_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
+        analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
+        print_summary(report_normal_df, analysis_df)
 
-    pick_topk = getattr(args, "pick_topk", 30)
-    if pick_topk > 0:
-        logger.info("  → 正在生成 Top-%d 选股推荐 ...", pick_topk)
-        print_stock_picks(pred_df, top_k=pick_topk, output_dir="output/picks")
-        logger.info("  ✓ 选股推荐已保存到 output/picks")
+        logger.info("-" * 40)
+        logger.info("[阶段 3/3] 生成图表与选股推荐")
+        logger.info("-" * 40)
+        logger.info("  → 正在生成可视化图表 ...")
+        generate_report_charts(pred_df, report_normal_df, analysis_df, output_dir=args.output_dir)
+        logger.info("  ✓ 图表已保存到: %s", args.output_dir)
+
+        pick_topk = getattr(args, "pick_topk", 30)
+        if pick_topk > 0:
+            logger.info("  → 正在生成 Top-%d 选股推荐 ...", pick_topk)
+            print_stock_picks(pred_df, top_k=pick_topk, output_dir="output/picks")
+            logger.info("  ✓ 选股推荐已保存到 output/picks")
+    except Exception as e:
+        logger.error("[阶段 3/3] 图表/选股生成失败: %s", e)
+        logger.error("  → 训练和回测结果已保存，不影响核心结论")
+        logger.error("  → 可单独生成图表: python run.py backtest --rid %s", rid if rid else "<recorder_id>")
+        raise
 
     logger.info("=" * 60)
     logger.info("Pipeline 全部完成!")

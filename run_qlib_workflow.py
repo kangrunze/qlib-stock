@@ -41,11 +41,13 @@ logging.basicConfig(
 logger = logging.getLogger("qlib_workflow")
 
 # ============================================================
-# 路径常量
+# 路径常量（支持环境变量覆盖，默认使用相对路径）
 # ============================================================
-CSV_DATA_DIR = Path("D:/data")
-QLIB_DATA_DIR = Path("d:/project/qlib-stock/qlib_data/cn_data")
-CHART_OUTPUT_DIR = Path("d:/project/qlib-stock/output/qlib_charts")
+_PROJECT_ROOT = Path(__file__).parent
+
+CSV_DATA_DIR = Path(os.environ.get("QLIB_CSV_DIR", "D:/data"))
+QLIB_DATA_DIR = Path(os.environ.get("QLIB_DATA_DIR", str(_PROJECT_ROOT / "qlib_data" / "cn_data")))
+CHART_OUTPUT_DIR = Path(os.environ.get("QLIB_CHART_DIR", str(_PROJECT_ROOT / "output" / "qlib_charts")))
 
 # Qlib bin 格式需要的字段
 # 注意: Qlib FeatureD.feature() 会将 "$close" 转换为 "close" (去掉第一个 $)
