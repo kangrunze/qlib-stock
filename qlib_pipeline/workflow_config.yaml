@@ -77,7 +77,8 @@
 # 作用: 告诉 Qlib 在哪里找到 bin 格式数据，以及市场区域
 # =============================================================================
 qlib:
-  provider_uri: "d:/project/qlib-stock/qlib_data/cn_data"  # Qlib bin 数据目录
+  # provider_uri: "d:/project/qlib-stock/qlib_data/cn_data"  # Qlib bin 数据目录
+  provider_uri: "D:/trae/qlib_bin"
   region: "cn"                    # 市场区域: cn=A股沪深, us=美股
 
 # =============================================================================
@@ -135,7 +136,7 @@ data_handler:
   #   end_time:   决定了数据截止日，决定了预测能覆盖到的最晚日期
   #   建议: start_time 至少比 train 开始早 1 年，确保因子有足够回看期
   start_time: "2020-01-01"        # 数据起始日期
-  end_time: "2026-06-26"          # 数据截止日期
+  end_time: "2026-06-25"          # 数据截止日期
 
   # ★ 预处理拟合范围（用于 z-score 标准化等 preprocessor）
   #   fit_start_time / fit_end_time 之间的数据用于计算标准化参数（均值、标准差）
@@ -146,7 +147,7 @@ data_handler:
   # ★ 股票池: csi300(沪深300) | csi500(中证500) | csi800(中证800) | all(全A股)
   #   控制训练/验证/测试中使用的股票范围
   #   csi300 标的少、质量高、训练快；all 标的多、噪声大、更贴近实战
-  instruments: "csi300"
+  instruments: "all"
 
 # =============================================================================
 # 5. 数据集配置 — 训练/验证/测试时间划分 ★
