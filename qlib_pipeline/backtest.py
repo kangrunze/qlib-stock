@@ -335,6 +335,14 @@ def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
 
         # 转换为 stock_code + score
         picks = daily_pred.reset_index()
+        
+        # 处理 MultiIndex columns：扁平化为简单字符串
+        if isinstance(picks.columns, pd.MultiIndex):
+            picks.columns = [
+                "_".join(str(c) for c in col if c).strip("_") 
+                for col in picks.columns
+            ]
+        
         # instrument 列名可能是 'instrument' 或直接是 level 名
         inst_col = picks.columns[0]
         picks = picks.rename(columns={inst_col: "stock_code"})

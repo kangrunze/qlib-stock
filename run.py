@@ -195,6 +195,15 @@ def parse_args():
                         choices=["day", "week", "month"],
                         help="数据频率: day(日线) | week(周线) | month(月线)")
 
+    # === update: 每日增量更新 ===
+    update_parser = subparsers.add_parser("update", help="每日增量更新（下载最近N天数据并更新bin）")
+    update_parser.add_argument("--days", "-d", type=int, default=3,
+                        help="下载最近多少天的数据（默认: 3）")
+    update_parser.add_argument("--skip-bin", action="store_true",
+                        help="跳过 bin 文件更新（只更新 parquet）")
+    update_parser.add_argument("--workers", "-w", type=int, default=None,
+                        help="并发线程数（默认使用配置值）")
+
     # === Phase 1: rolling ===
     rolling_parser = subparsers.add_parser("rolling", help="滚动 Walk-Forward 验证")
     rolling_parser.add_argument("--config", type=str, default=None)
@@ -775,6 +784,16 @@ def cmd_key_years(args):
     logger.info("  → 结果已保存到: %s", args.output_dir)
 
 
+def cmd_update(args):
+    """每日增量更新"""
+    logger.info("[命令] update — 每日增量更新")
+    from data_center.daily_update import daily_update
+    days = args.days
+    skip_bin = args.skip_bin
+    workers = args.workers if args.workers else 10
+    daily_update(days=days, skip_bin=skip_bin, workers=workers)
+
+
 def cmd_pick(args):
     """选股推荐：从已有回测结果中提取 Top-K 股票"""
     logger.info("[命令] pick — 选股推荐 (recorder_id=%s)", args.rid)
@@ -805,7 +824,7 @@ def main():
     cmd_map = {
         "train": cmd_train, "backtest": cmd_backtest, "full": cmd_full,
         "pick": cmd_pick,
-        "data": cmd_data,
+        "data": cmd_data, "update": cmd_update,
         "rolling": cmd_rolling, "drift": cmd_drift, "ic-stability": cmd_ic_stability,
         "tscv": cmd_tscv, "regime": cmd_regime,
         "sensitivity": cmd_sensitivity, "key-years": cmd_key_years,
