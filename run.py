@@ -678,8 +678,8 @@ def cmd_drift(args):
         from qlib.utils import init_instance_by_config
         model = init_instance_by_config(task["model"])
         model.fit(dataset)
-        test_data_full = dataset.prepare("test", col_set=["feature", "label"], data_key=qlib.data.D.handler)
-        preds_drift = model.predict(test_data_full["feature"])
+        test_data_full = dataset.prepare("test", col_set=["feature", "label"])
+        preds_drift = model.predict(dataset, segment="test")
         labels_drift = test_data_full["label"]
         ic_series_drift = compute_daily_rank_ic(
             pd.Series(preds_drift, index=test_data_full["feature"].index),
@@ -719,8 +719,8 @@ def cmd_ic_stability(args):
     logger.info("[步骤 2/4] ✓ 模型训练完成")
 
     logger.info("[步骤 3/4] 在测试集上生成预测并计算 IC 序列 ...")
-    test_data = dataset.prepare("test", col_set=["feature", "label"], data_key=qlib.data.D.handler)
-    preds = model.predict(test_data["feature"])
+    test_data = dataset.prepare("test", col_set=["feature", "label"])
+    preds = model.predict(dataset, segment="test")
     logger.info("  → 测试集预测样本数: %d", len(preds))
 
     if "label" in test_data and preds is not None:
@@ -784,14 +784,29 @@ def cmd_regime(args):
     from qlib.data import D
     init_qlib_env(config)
     try:
-        benchmark = D.features(["600000"], ["$close"], start_time="2020-01-01", end_time="2025-12-31")
-        price = benchmark.iloc[:, 0]
+        # 从 bin 文件直接读取基准数据
+        benchmark_path = Path("D:/trae/qlib_bin/features/SH600000/close.day.bin")
+        if benchmark_path.exists():
+            with open(benchmark_path, "rb") as f:
+                benchmark_data = np.fromfile(f, dtype="<f")
+            start_idx = int(benchmark_data[0])
+            close_values = benchmark_data[1:]
+            # 读取日历
+            calendar_path = Path("D:/trae/qlib_bin/calendars/day.txt")
+            with open(calendar_path, "r") as f:
+                all_dates = [line.strip() for line in f if line.strip()]
+            # 构造 price Series
+            dates = all_dates[start_idx:start_idx + len(close_values)]
+            price = pd.Series(close_values, index=pd.to_datetime(dates)).dropna()
+        else:
+            logger.error("基准文件不存在: %s", benchmark_path)
+            return
         logger.info("  → 基准数据: 600000, 数据点数: %d", len(price))
         logger.info("[步骤 1/2] ✓ 基准数据加载完成")
 
         logger.info("[步骤 2/2] 进行市场阶段分类与稳定性分析 ...")
         regime_df = classify_market_regime(price)
-        logger.info("  → 识别到 %d 个市场阶段", len(regime_df["regime"].unique()) if "regime" in regime_df.columns else "N/A")
+        logger.info("  → 识别到 %d 个市场阶段", regime_df["regime"].nunique())
 
         # 训练模型并生成真实 IC 序列
         logger.info("  → 训练模型以计算真实 IC 序列 ...")
@@ -800,8 +815,8 @@ def cmd_regime(args):
         dataset = init_instance_by_config(task["dataset"])
         model = init_instance_by_config(task["model"])
         model.fit(dataset)
-        test_data = dataset.prepare("test", col_set=["feature", "label"], data_key=qlib.data.D.handler)
-        preds = model.predict(test_data["feature"])
+        test_data = dataset.prepare("test", col_set=["feature", "label"])
+        preds = model.predict(dataset, segment="test")
         labels = test_data["label"]
         from qlib_pipeline.ic_stability import compute_daily_rank_ic
         ic_series = compute_daily_rank_ic(
@@ -810,6 +825,7 @@ def cmd_regime(args):
         )
         logger.info("  → 真实 RankIC 序列: %d 个交易日, IC 均值=%.4f", len(ic_series), ic_series.mean())
 
+        from qlib_pipeline.regime import regime_analysis
         df = regime_analysis(ic_series, regime_df, output_dir=args.output_dir)
         logger.info("[步骤 2/2] ✓ 市场阶段分析完成: %d 个阶段", len(df))
         logger.info("  → 报告已保存到: %s", args.output_dir)
