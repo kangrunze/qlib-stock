@@ -102,7 +102,7 @@ def init_qlib_env(config: dict):
     seed = config.get("experiment", {}).get("random_seed", 42)
     np.random.seed(seed)
 
-    provider_uri = config.get("qlib", {}).get("provider_uri", "d:/project/qlib-stock/qlib_data/cn_data")
+    provider_uri = config.get("qlib", {}).get("provider_uri", "D:/trae/qlib_bin")
     logger.info("初始化 Qlib: %s", provider_uri)
     qlib.init(provider_uri=provider_uri, region=REG_CN)
 

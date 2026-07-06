@@ -55,7 +55,7 @@ _paths = _config.get("paths", {})
 _ds_conf = _config.get("data_source", {})
 
 CSV_DIR = Path(_ds_conf.get("csv_dir", "D:/data"))
-QLIB_DIR = Path("D:/trae/qlib_bin")  # 固定为实际数据路径
+QLIB_DIR = Path(_ds_conf.get("qlib_dir", "D:/trae/qlib_bin"))
 MAX_WORKERS = _ds_conf.get("max_workers", 10)
 
 # 北交所代码前缀

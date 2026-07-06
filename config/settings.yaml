@@ -1,114 +1,42 @@
 # -*- coding: utf-8 -*-
-# ===== 全局路径配置 =====
-paths:
-  base_dir: "d:/project/qlib-stock/stock-ai"
-  data_dir: "d:/project/qlib-stock/stock-ai/data"
-  model_dir: "d:/project/qlib-stock/stock-ai/models"
-  output_dir: "d:/project/qlib-stock/stock-ai/output"
-  log_dir: "d:/project/qlib-stock/stock-ai/output/logs"
-  parquet_dir: "d:/project/qlib-stock/stock-ai/data/daily"
-  features_dir: "d:/project/qlib-stock/stock-ai/data/features"
-  index_dir: "d:/project/qlib-stock/stock-ai/data/index"
-  industry_dir: "d:/project/qlib-stock/stock-ai/data/industry"
-  financial_dir: "d:/project/qlib-stock/stock-ai/data/financial"
-  reference_dir: "d:/project/qlib-stock/stock-ai/data/reference"
+# ============================================================
+# Qlib 原生管线全局配置
+# 所有路径和参数均在此文件中统一管理
+# 消费方: run.py（argparse 默认值）、data_center/（数据路径）、cmd_regime（市场阶段分析）
+# Qlib 工作流配置: qlib_pipeline/workflow_config.yaml
+# ============================================================
 
 # ===== 数据源配置 =====
-# data_format: 底层数据格式，决定 DataStore 使用哪种后端读取数据
-#   - "parquet": 从 parquet_dir 读取 .parquet 文件（DuckDB 查询）
-#   - "csv": 从 csv_dir 读取 .csv 文件（CsvDataLoader）
-#   - "qlib": 从 qlib_dir 读取 Qlib bin 格式
-# 任意上层代码（train/daily/charts/backtest）都通过 data_store 统一接口访问数据，
-# 修改此处即可切换底层数据源，无需改动业务代码
 data_source:
-  data_format: "csv"           # parquet / csv / qlib
-  csv_dir: "D:/data"           # CSV 数据目录（data_format=csv 时生效）
-  parquet_dir: "d:/project/qlib-stock/stock-ai/data/daily"  # Parquet 目录
-  qlib_dir: "d:/project/qlib-stock/qlib_data/cn_data"        # Qlib bin 目录
-  primary: "csv"               # 兼容旧配置，保留
-  backup: "baostock"
-  start_date: "2005-01-01"
-  max_workers: 10             # 多线程下载并发数
-  retry_max: 3
-  retry_delay: 2              # 秒
-  incremental_window: 30      # 增量更新覆盖最近N天（应对复权修正）
+  data_format: "csv"           # 数据格式: csv / parquet / qlib
+  csv_dir: "D:/data"           # CSV 数据目录
+  qlib_dir: "D:/trae/qlib_bin" # Qlib bin 数据目录
+  start_date: "2005-01-01"     # 数据起始日期
+  max_workers: 10              # 并发下载线程数
+  retry_max: 3                 # API 请求最大重试次数
+  retry_delay: 2               # 重试间隔（秒）
+  incremental_window: 30       # 增量更新覆盖最近N天（应对复权修正）
 
-# ===== 选股池配置 =====
-stock_universe:
-  # 排除板块
-  exclude_boards: ["北交所"]
-  # 过滤条件
-  min_listed_days: 250        # 上市至少250个交易日
-  exclude_st: true             # 排除ST
-  exclude_suspended: true      # 排除停牌
+# ===== 输出路径配置 =====
+output:
+  charts: "output/qlib_charts"
+  picks: "output/picks"
+  drift: "output/drift"
+  ic_stability: "output/ic_stability"
+  regime: "output/regime"
+  tscv: "output/tscv"
+  rolling: "output/rolling"
+  sensitivity: "output/sensitivity"
+  key_years: "output/key_years"
+  validation: "output/validation"
 
-# ===== 数据集划分配置 =====
-dataset_split:
-  train_start: "2013-01-01"
-  train_end: "2021-06-30"
-  valid_start: "2021-07-01"
-  valid_end: "2022-12-31"
-  test_start: "2023-01-01"
-  test_end: "2023-12-31"
-  backtest_start: "2024-01-01"
-  backtest_end: "2025-06-30"
-
-# ===== 特征工程配置 =====
-features:
-  enabled_categories:
-    - "trend"           # 趋势类：MA/EMA/MACD/ADX/CCI等
-    - "momentum"        # 动量类：RSI/KDJ/WR/MOM/收益率
-    - "volatility"      # 波动类：ATR/STD/BB_width/历史波动率
-    - "volume_price"    # 量价类：OBV/MFI/VWAP/换手率
-    - "statistical"     # 统计类：Skew/Kurt/Beta/Alpha/Sharpe
-    - "cross_section"   # 横截面：全市场排名分位数
-  ic_threshold: 0.02
-  corr_threshold: 0.95
-
-# ===== Label配置 =====
-labels:
-  types:
-    - name: "ret_20d"
-      horizon: 20
-      description: "未来20日收益率（月度调仓）"
-    - name: "ret_60d"
-      horizon: 60
-      description: "未来60日收益率（季度调仓）"
-    - name: "alpha_20d"
-      horizon: 20
-      benchmark: "000905"
-      description: "20日超额收益vs中证500"
-    - name: "alpha_60d"
-      horizon: 60
-      benchmark: "000905"
-      description: "60日超额收益vs中证500"
-  primary: "alpha_20d"
-
-# ===== 模型配置 =====
-model:
-  types: ["lightgbm", "xgboost", "catboost"]
-  ensemble_weights: [0.5, 0.3, 0.2]
-  early_stopping_rounds: 50
-  enable_optuna: true
-
-# ===== 策略配置 =====
+# ===== 策略全局参数 =====
 strategy:
-  top_k: 30                   # 选股数量
-  rebalance_freq: "monthly"   # 调仓频率: daily/weekly/monthly/quarterly
-  weight_method: "equal"      # 权重方法: equal/score_weighted/risk_parity
-  industry_neutral: true      # 是否行业中性化
-  max_stocks_per_industry: 5  # 单行业最大持仓数
+  top_k: 30                    # 选股推荐数量（argparse --pick-topk/--topk 默认值）
 
-# ===== 风险控制 =====
-risk:
-  max_position_pct: 0.10      # 单票最大仓位
-  max_industry_pct: 0.30      # 单行业最大仓位
-  stop_loss_pct: 0.08         # 止损比例
-
-# ===== 回测配置 =====
-backtest:
-  initial_cash: 1000000       # 初始资金（元）
-  commission_buy: 0.00025     # 买入手续费（万2.5）
-  commission_sell: 0.00125    # 卖出手续费（含印花税万10）
-  slippage_bps: 0.001         # 滑点
-  benchmark: "000905"         # 基准指数（中证500）
+# ===== 市场阶段分析配置 =====
+regime:
+  benchmark_code: "SH600000"   # 基准股票代码（用于判断市场阶段）
+  benchmark_field: "close"     # 基准价格字段
+  ma_window: 60                # 均线窗口
+  vol_window: 60               # 波动率窗口

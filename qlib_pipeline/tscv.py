@@ -110,7 +110,7 @@ class PurgedKFoldCV:
         import qlib
         from qlib.constant import REG_CN
         provider_uri = self.config.get("qlib", {}).get("provider_uri",
-                         "d:/project/qlib-stock/qlib_data/cn_data")
+                         "D:/trae/qlib_bin")
         qlib.init(provider_uri=provider_uri, region=REG_CN)
 
         from qlib.config import C

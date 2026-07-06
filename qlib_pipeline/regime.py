@@ -205,7 +205,7 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
     from qlib.utils import flatten_dict
 
     provider_uri = config.get("qlib", {}).get("provider_uri",
-                     "d:/project/qlib-stock/qlib_data/cn_data")
+                     "D:/trae/qlib_bin")
     qlib.init(provider_uri=provider_uri, region=REG_CN)
 
     from qlib.config import C

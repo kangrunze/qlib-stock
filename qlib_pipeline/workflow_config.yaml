@@ -21,17 +21,9 @@
 #   stock_universe     run_qlib_workflow.py             CSV 转 bin 时的过滤规则
 #   data_handler       qlib_pipeline/train.py:build_task()      Alpha158/360 的 kwargs
 #   dataset            qlib_pipeline/train.py:build_task()      DatasetH 的 segments
-#   model              train.py（旧管线，run.py 不使用） 自研模型超参
 #   qlib_lgb           qlib_pipeline/train.py:build_task()      Qlib 原生 LGBModel ← run.py 实际使用
-#   optuna             model/optuna_tuner.py             超参搜索
-#   shap               model/shap_analysis.py           SHAP 可解释性
-#   strategy           qlib Pipeline / 自研回测          选股策略
-#   risk               自研回测引擎                     风控参数
 #   backtest           run.py:cmd_full() / cmd_backtest() 回测引擎+策略+交易参数
 #   experiment         qlib_pipeline/train.py           MLflow 实验名
-#   training           train.py（旧管线）               训练划分参数
-#   registry           model/model_registry.py          模型存储路径
-#   features           feature_engine/                  自定义因子类别
 #   labels             qlib_pipeline/train.py           预测目标定义
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,67 +166,7 @@ dataset:
     test:  ["2025-07-01", "2026-06-25"]    # 测试集: 约 1 年
 
 # =============================================================================
-# 6. 模型配置 — 自研管线超参（train.py 旧管线使用）
-# =============================================================================
-# ⚠️  本段仅供自研管线 train.py 使用，run.py 不读取此配置
-#     run.py 实际使用的模型配置是下方第 7 节「qlib_lgb」
-#
-# 消费方: train.py（旧管线，通过 sklearn API 直接训练 LightGBM/XGBoost/CatBoost）
-# 作用: 定义自研管线的模型超参数和集成权重
-# =============================================================================
-model:
-  type: "lgb"                  # 当前模型类型: lgb | xgb | cat | ensemble
-  # --- LightGBM ---
-  lightgbm:
-    objective: "regression"    # 回归任务
-    metric: "rmse"             # 评估指标
-    boosting_type: "gbdt"      # 提升类型: gbdt | dart | goss
-    num_leaves: 128            # 叶子节点数（越大模型越复杂，推荐 2^max_depth 附近）
-    max_depth: 10              # 树深度（限制过拟合，推荐范围 5~12）
-    learning_rate: 0.05        # 学习率（推荐 0.01~0.1，越小越慢但可能更稳定）
-    n_estimators: 1000         # 最大迭代轮数
-    subsample: 0.8             # 每轮训练样本采样比例（0.7~0.9，防止过拟合）
-    colsample_bytree: 0.8      # 每棵树特征采样比例（0.7~0.9，增加随机性）
-    reg_alpha: 0.1             # L1 正则化系数（Lasso，推荐 0~1）
-    reg_lambda: 0.1            # L2 正则化系数（Ridge，推荐 0~1）
-    min_child_samples: 20      # 叶节点最小样本数（越大越防过拟合）
-    random_state: 42           # 随机种子（确保可复现）
-    n_jobs: -1                 # 并行线程数（-1 = 使用全部 CPU 核心）
-    verbosity: -1              # 日志级别（-1 = 静默）
-    early_stopping_rounds: 50  # 早停轮数（验证集连续 50 轮无提升则停止训练）
-  # --- XGBoost ---
-  xgboost:
-    objective: "reg:squarederror"
-    eval_metric: "rmse"
-    max_depth: 8
-    learning_rate: 0.05
-    n_estimators: 1000
-    subsample: 0.8
-    colsample_bytree: 0.8
-    reg_alpha: 0.1
-    reg_lambda: 0.1
-    random_state: 42
-    n_jobs: -1
-    verbosity: 0
-    early_stopping_rounds: 50
-  # --- CatBoost ---
-  catboost:
-    loss_function: "RMSE"
-    eval_metric: "RMSE"
-    iterations: 1000
-    learning_rate: 0.05
-    depth: 8
-    l2_leaf_reg: 3.0
-    random_seed: 42
-    thread_count: -1
-    verbose: 0
-    early_stopping_rounds: 50
-  # --- Ensemble（三模型加权平均） ---
-  ensemble:
-    weights: [0.5, 0.3, 0.2]   # 加权权重: LGB : XGB : CatBoost
-
-# =============================================================================
-# 7. Qlib 原生 LGB 配置 — run.py 实际使用的模型 ★
+# 6. Qlib 原生 LGB 配置 — run.py 实际使用的模型 ★
 # =============================================================================
 # 消费方: qlib_pipeline/train.py : build_task() → 构建 Qlib task dict
 # 作用: 定义 run.py 使用的 Qlib 官方 LGBModel 超参数
@@ -263,63 +195,7 @@ qlib_lgb:
     num_threads: 20            # 训练线程数（⚠ 当前未经过实测验证，建议在 Windows 环境下实测 4/8/20 后取稳定值；若出现卡死/内存暴涨，优先降至 4）
 
 # =============================================================================
-# 8. Optuna 超参搜索配置
-# =============================================================================
-# 消费方: model/optuna_tuner.py
-# 作用: 控制 Optuna 贝叶斯超参搜索的行为
-# 触发: python run.py（当前需手动调用 optuna_tuner，run.py 未集成子命令）
-# =============================================================================
-optuna:
-  n_trials: 50                 # 搜索试验次数（越多越精确但越慢，推荐 50~200）
-  cv_folds: 5                  # 交叉验证折数（时间序列建议 5 折）
-  direction: "maximize"        # 优化方向: maximize(RankIC) | minimize(mse)
-  timeout: 3600                # 超时时间（秒），3600 = 1 小时
-
-# =============================================================================
-# 9. SHAP 可解释性分析配置
-# =============================================================================
-# 消费方: model/shap_analysis.py
-# 作用: 控制 SHAP 特征重要性分析的计算参数
-# 触发: 训练完成后手动调用 shap_analysis.py
-# =============================================================================
-shap:
-  max_display: 20              # Summary Plot 最多展示的特征数（Top-N）
-  sample_size: 1000            # SHAP 计算时的采样数（大数据集降采样，降低计算时间）
-
-# =============================================================================
-# 10. 策略配置 — 选股和调仓规则
-# =============================================================================
-# 消费方:
-#   - run.py:cmd_full() / cmd_backtest() → 回测时的交易策略
-#   - 自研回测引擎 backtest/backtest_engine.py → 旧管线策略
-# 作用: 定义 TopkDropout 策略的参数（每期选 Top-K 只股票，替换 N 只）
-# =============================================================================
-strategy:
-  # Qlib 官方策略组件（回测时使用）
-  class: "TopkDropoutStrategy"
-  module_path: "qlib.contrib.strategy.signal_strategy"
-  # 注意: topk/n_drop 请统一在 backtest.strategy.kwargs 中配置，此处不再重复
-  kwargs: {}
-  # 自定义策略扩展参数（独立于 Qlib 策略，供自研回测引擎使用）
-  rebalance_freq: "monthly"    # 调仓频率: daily | weekly | monthly | quarterly
-  weight_method: "equal"       # 权重分配: equal(等权) | score_weighted(按得分加权)
-  industry_neutral: false      # 是否行业中性化（true 时每行业最多 max_stocks_per_industry 只）
-  max_stocks_per_industry: 5   # 行业中性化时每行业最大持仓数
-
-# =============================================================================
-# 11. 风险控制参数
-# =============================================================================
-# 消费方: 自研回测引擎 backtest/backtest_engine.py
-# 作用: 控制仓位上限和止损规则
-# 注意: Qlib 原生回测（run.py）不直接使用此配置，由 TopkDropoutStrategy 内部控制
-# =============================================================================
-risk:
-  max_position_pct: 0.10       # 单只股票最大仓位（10%，防止单票风险过大）
-  max_industry_pct: 0.30      # 单个行业最大仓位（30%，防行业集中风险）
-  stop_loss_pct: 0.08          # 个股止损线（亏损 8% 即止损卖出）
-
-# =============================================================================
-# 12. 回测配置 — 模拟交易参数 ★
+# 7. 回测配置 — 模拟交易参数 ★
 # =============================================================================
 # 消费方: run.py:cmd_full() / cmd_backtest() → 传给 Qlib PortAnaRecord
 # 作用: 定义回测引擎的交易规则（执行器、策略、账户、交易成本等）
@@ -360,7 +236,7 @@ backtest:
       min_cost: 5                          # 最低佣金（元），不足 5 元按 5 元收取
 
 # =============================================================================
-# 13. 实验配置 — MLflow 追踪和实验管理
+# 8. 实验配置 — MLflow 追踪和实验管理
 # =============================================================================
 # 消费方: qlib_pipeline/train.py : run_train()
 # 作用: 控制 Qlib Recorder 和 MLflow 的实验追踪行为
@@ -373,52 +249,7 @@ experiment:
   random_seed: 42               # 全局随机种子（确保实验可复现）
 
 # =============================================================================
-# 14. 训练配置 — 自研管线训练参数
-# =============================================================================
-# ⚠️  本段仅供自研管线 train.py 使用，run.py 不读取此配置
-#     run.py 使用 Qlib 的 DatasetH segments（第 5 节）进行时间划分
-#
-# 消费方: train.py（旧管线，通过 TimeSplitter 按比例切分）
-# =============================================================================
-training:
-  test_size: 0.2                # 测试集占总量比例（20%）
-  validation_size: 0.2          # 验证集占训练集比例（20%）
-  shuffle: false                # 是否打乱数据（金融时序必须为 false，防止未来信息泄露）
-  random_state: 42              # 随机种子
-
-# =============================================================================
-# 15. 模型注册中心 — 模型版本管理
-# =============================================================================
-# 消费方: model/model_registry.py
-# 作用: 控制自研管线训练后模型的保存路径和文件命名
-# 注意: run.py 使用 Qlib Recorder 自动管理模型，不依赖此配置
-# =============================================================================
-registry:
-  storage_path: "models/"               # 模型文件存储根目录
-  metadata_filename: "meta.json"       # 模型元数据文件名（记录超参、指标等）
-  model_filename: "model.pkl"           # 模型序列化文件名
-
-# =============================================================================
-# 16. 特征工程配置 — 自定义因子（Alpha158/360 之外的补充）
-# =============================================================================
-# 消费方: feature_engine/ 模块
-# 作用: 定义自研因子引擎启用的因子类别和过滤阈值
-# 注意: run.py 使用 Qlib Alpha158/360 内置因子，此配置仅对 train.py 旧管线生效
-#       技术指标（MA/MACD/RSI 等）已由 Alpha158 原生覆盖，无需重复配置
-# =============================================================================
-features:
-  enabled_categories:
-    - "fundamental"       # 基本面代理变量（PE/PB/ROE 的价量代理因子）
-    - "fund_flow"         # 资金流因子（占位，待资金流数据源就绪）
-    - "industry"          # 行业因子（占位，待行业分类数据源就绪）
-    - "news"              # 新闻情绪因子（占位，待 NLP 模型就绪）
-    - "announcements"     # 公告事件因子（占位，待事件抽取模块就绪）
-    - "alternative"       # 另类数据因子（占位，待另类数据源就绪）
-  ic_threshold: 0.02      # 因子 IC 过滤阈值：|IC| < 0.02 的因子被自动剔除
-  corr_threshold: 0.95    # 因子相关性阈值：相关系数 > 0.95 的冗余因子只保留 IC 更高的
-
-# =============================================================================
-# 17. Label 配置 — 预测目标定义
+# 9. Label 配置 — 预测目标定义
 # =============================================================================
 # 消费方: qlib_pipeline/train.py : build_task() → 传给 Alpha158/360 handler
 # 作用: 定义模型的预测目标（未来 N 日收益率）

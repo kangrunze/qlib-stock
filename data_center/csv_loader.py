@@ -102,21 +102,13 @@ class CsvDataLoader:
             config_path = _PROJECT_ROOT / "config" / "settings.yaml"
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
-            data_dir = cfg.get("data_source", {}).get(
-                "csv_dir", cfg.get("paths", {}).get("csv_dir", "D:/data")
-            )
-
-        self.data_dir = Path(data_dir)
-
-        # 加载配置中的默认日期范围
-        config_path = _PROJECT_ROOT / "config" / "settings.yaml"
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            default_start = cfg.get("data_source", {}).get("start_date", "2005-01-01")
+            ds_cfg = cfg.get("data_source", {})
+            data_dir = ds_cfg.get("csv_dir", "D:/data")
+            default_start = ds_cfg.get("start_date", "2005-01-01")
         else:
             default_start = "2005-01-01"
 
+        self.data_dir = Path(data_dir)
         self.start_date = start_date or default_start
         self.end_date = end_date or "2099-12-31"
 

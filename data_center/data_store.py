@@ -244,7 +244,7 @@ class DataStore:
             return CsvDataStore(csv_dir, start_date, end_date)
 
         elif fmt == "qlib":
-            qlib_dir = ds_cfg.get("qlib_dir", str(_PROJECT_ROOT / "qlib_data" / "cn_data"))
+            qlib_dir = ds_cfg.get("qlib_dir", "D:/trae/qlib_bin")
             return QlibDataStore(qlib_dir, start_date, end_date)
 
         else:

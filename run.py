@@ -45,11 +45,25 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 # 项目根目录
 _PROJECT_ROOT = Path(__file__).parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+# ---- 加载全局配置 ----
+def _load_settings() -> dict:
+    """加载 config/settings.yaml"""
+    settings_path = _PROJECT_ROOT / "config" / "settings.yaml"
+    with open(settings_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+_settings = _load_settings()
+_output_cfg = _settings.get("output", {})
+_ds_cfg = _settings.get("data_source", {})
+_strategy_cfg = _settings.get("strategy", {})
+_regime_cfg = _settings.get("regime", {})
 
 # MUST patch numpy BEFORE importing qlib
 from qlib_pipeline.numpy_compat import *  # noqa
@@ -145,10 +159,10 @@ def parse_args():
     full_parser.add_argument("--loss", type=str, default=None,
                         choices=["mse", "rank"])
     full_parser.add_argument("--topk", type=int, default=None)
-    full_parser.add_argument("--pick-topk", type=int, default=30,
-                        help="选股推荐数量（默认 30）")
+    full_parser.add_argument("--pick-topk", type=int, default=_strategy_cfg.get("top_k", 30),
+                        help="选股推荐数量")
     full_parser.add_argument("--experiment", type=str, default="qlib_pipeline")
-    full_parser.add_argument("--output-dir", type=str, default="output/qlib_charts")
+    full_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("charts", "output/qlib_charts"))
 
     # === train: 仅训练 ===
     train_parser = subparsers.add_parser("train", help="仅训练模型")
@@ -164,20 +178,20 @@ def parse_args():
     bt_parser.add_argument("--config", type=str, default=None)
     bt_parser.add_argument("--rid", type=str, required=True)
     bt_parser.add_argument("--experiment", type=str, default="qlib_train")
-    bt_parser.add_argument("--output-dir", type=str, default="output/qlib_charts")
+    bt_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("charts", "output/qlib_charts"))
     bt_parser.add_argument("--topk", type=int, default=None)
-    bt_parser.add_argument("--pick-topk", type=int, default=30,
-                        help="选股推荐数量（默认 30）")
+    bt_parser.add_argument("--pick-topk", type=int, default=_strategy_cfg.get("top_k", 30),
+                        help="选股推荐数量")
 
     # === pick: 选股推荐 ===
     pick_parser = subparsers.add_parser("pick", help="选股推荐（需已有回测结果）")
     pick_parser.add_argument("--config", type=str, default=None)
     pick_parser.add_argument("--rid", type=str, required=True)
     pick_parser.add_argument("--experiment", type=str, default="qlib_pipeline")
-    pick_parser.add_argument("--topk", type=int, default=30)
+    pick_parser.add_argument("--topk", type=int, default=_strategy_cfg.get("top_k", 30))
     pick_parser.add_argument("--date", type=str, default=None,
                         help="指定日期 YYYY-MM-DD（默认取最新）")
-    pick_parser.add_argument("--output-dir", type=str, default="output/picks")
+    pick_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("picks", "output/picks"))
 
     # === data: 数据管理 ===
     data_parser = subparsers.add_parser("data", help="数据下载/转换/检查")
@@ -185,9 +199,9 @@ def parse_args():
     data_parser.add_argument("--convert", action="store_true")
     data_parser.add_argument("--check", action="store_true")
     data_parser.add_argument("--sample", type=int, default=None)
-    data_parser.add_argument("--csv-dir", type=str, default="D:/data")
+    data_parser.add_argument("--csv-dir", type=str, default=_ds_cfg.get("csv_dir", "D:/data"))
     data_parser.add_argument("--qlib-dir", type=str,
-                        default="d:/project/qlib-stock/qlib_data/cn_data")
+                        default=_ds_cfg.get("qlib_dir", "D:/trae/qlib_bin"))
     data_parser.add_argument("--freq", type=str, default="day",
                         choices=["day", "week", "month"],
                         help="数据频率: day(日线) | week(周线) | month(月线)")
@@ -207,17 +221,17 @@ def parse_args():
     rolling_parser.add_argument("--n-folds", type=int, default=6)
     rolling_parser.add_argument("--window-years", type=float, default=3.0)
     rolling_parser.add_argument("--step-months", type=int, default=6)
-    rolling_parser.add_argument("--output-dir", type=str, default="output/rolling")
+    rolling_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("rolling", "output/rolling"))
 
     # === Phase 1: drift ===
     drift_parser = subparsers.add_parser("drift", help="特征漂移检测 (PSI)")
     drift_parser.add_argument("--config", type=str, default=None)
-    drift_parser.add_argument("--output-dir", type=str, default="output/drift")
+    drift_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("drift", "output/drift"))
 
     # === Phase 1: ic-stability ===
     ic_parser = subparsers.add_parser("ic-stability", help="IC 稳定性分析 (ICIR/衰减/分层)")
     ic_parser.add_argument("--config", type=str, default=None)
-    ic_parser.add_argument("--output-dir", type=str, default="output/ic_stability")
+    ic_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("ic_stability", "output/ic_stability"))
 
     # === Phase 3: tscv ===
     tscv_parser = subparsers.add_parser("tscv", help="Purged K-Fold TSCV")
@@ -225,12 +239,12 @@ def parse_args():
     tscv_parser.add_argument("--n-splits", type=int, default=5)
     tscv_parser.add_argument("--purge-days", type=int, default=5)
     tscv_parser.add_argument("--embargo-days", type=int, default=0)
-    tscv_parser.add_argument("--output-dir", type=str, default="output/tscv")
+    tscv_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("tscv", "output/tscv"))
 
     # === Phase 3: regime ===
     regime_parser = subparsers.add_parser("regime", help="市场阶段稳定性分析")
     regime_parser.add_argument("--config", type=str, default=None)
-    regime_parser.add_argument("--output-dir", type=str, default="output/regime")
+    regime_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("regime", "output/regime"))
 
     # === Phase 3: sensitivity ===
     sens_parser = subparsers.add_parser("sensitivity", help="超参数敏感性分析")
@@ -239,20 +253,20 @@ def parse_args():
                         help="单参数扫描 (e.g. learning_rate)")
     sens_parser.add_argument("--values", type=str, default=None,
                         help="逗号分隔值 (e.g. 0.01,0.05,0.10)")
-    sens_parser.add_argument("--output-dir", type=str, default="output/sensitivity")
+    sens_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("sensitivity", "output/sensitivity"))
 
     # === Phase 3: key-years ===
     ky_parser = subparsers.add_parser("key-years", help="关键年份独立回测")
     ky_parser.add_argument("--config", type=str, default=None)
     ky_parser.add_argument("--years", type=str, default=None,
                       help="逗号分隔年份 (e.g. 2020,2022,2024)")
-    ky_parser.add_argument("--output-dir", type=str, default="output/key_years")
+    ky_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("key_years", "output/key_years"))
 
     # === validate-picks: 验证历史推荐 ===
     vp_parser = subparsers.add_parser("validate-picks", help="验证历史选股推荐的实际表现")
-    vp_parser.add_argument("--picks-dir", type=str, default="output/picks")
+    vp_parser.add_argument("--picks-dir", type=str, default=_output_cfg.get("picks", "output/picks"))
     vp_parser.add_argument("--lookback-days", type=int, default=20)
-    vp_parser.add_argument("--output-dir", type=str, default="output/validation")
+    vp_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("validation", "output/validation"))
 
     return parser.parse_args()
 
@@ -785,14 +799,17 @@ def cmd_regime(args):
     init_qlib_env(config)
     try:
         # 从 bin 文件直接读取基准数据
-        benchmark_path = Path("D:/trae/qlib_bin/features/SH600000/close.day.bin")
+        qlib_dir = _ds_cfg.get("qlib_dir", "D:/trae/qlib_bin")
+        benchmark_code = _regime_cfg.get("benchmark_code", "SH600000")
+        benchmark_field = _regime_cfg.get("benchmark_field", "close")
+        benchmark_path = Path(qlib_dir) / "features" / benchmark_code / f"{benchmark_field}.day.bin"
         if benchmark_path.exists():
             with open(benchmark_path, "rb") as f:
                 benchmark_data = np.fromfile(f, dtype="<f")
             start_idx = int(benchmark_data[0])
             close_values = benchmark_data[1:]
             # 读取日历
-            calendar_path = Path("D:/trae/qlib_bin/calendars/day.txt")
+            calendar_path = Path(qlib_dir) / "calendars" / "day.txt"
             with open(calendar_path, "r") as f:
                 all_dates = [line.strip() for line in f if line.strip()]
             # 构造 price Series
@@ -877,7 +894,7 @@ def cmd_update(args):
     from data_center.daily_update import daily_update
     days = args.days
     skip_bin = args.skip_bin
-    workers = args.workers if args.workers else 10
+    workers = args.workers if args.workers else _ds_cfg.get("max_workers", 10)
     daily_update(days=days, skip_bin=skip_bin, workers=workers)
 
 
@@ -920,7 +937,7 @@ def cmd_validate_picks(args):
 
     # 获取推荐股票的价格数据
     lookback = args.lookback_days
-    from recommendation_center.validator import RecommendationValidator
+    from qlib_pipeline.validate import RecommendationValidator
 
     validator = RecommendationValidator()
     validation_results = []
@@ -1015,8 +1032,8 @@ def main():
     else:
         logger.info("未指定子命令，默认执行 full 流程")
         args.config = None; args.handler = None
-        args.loss = None; args.topk = None; args.pick_topk = 30
-        args.experiment = "qlib_pipeline"; args.output_dir = "output/qlib_charts"
+        args.loss = None; args.topk = None; args.pick_topk = _strategy_cfg.get("top_k", 30)
+        args.experiment = "qlib_pipeline"; args.output_dir = _output_cfg.get("charts", "output/qlib_charts")
         cmd_full(args)
 
 
