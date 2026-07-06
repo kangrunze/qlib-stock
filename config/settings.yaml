@@ -7,10 +7,12 @@
 # ============================================================
 
 # ===== 数据源配置 =====
+# ⚠ 本文件 data_source.qlib_dir 必须与 qlib_pipeline/workflow_config.yaml 中
+#    qlib.provider_uri 保持一致。修改数据目录时请两处同步修改。
 data_source:
   data_format: "csv"           # 数据格式: csv / parquet / qlib
   csv_dir: "D:/data"           # CSV 数据目录
-  qlib_dir: "D:/trae/qlib_bin" # Qlib bin 数据目录
+  qlib_dir: "D:/download/qlib_bin" # Qlib bin 数据目录（需与 workflow_config.yaml:qlib.provider_uri 一致）
   start_date: "2005-01-01"     # 数据起始日期
   max_workers: 10              # 并发下载线程数
   retry_max: 3                 # API 请求最大重试次数
@@ -36,7 +38,7 @@ strategy:
 
 # ===== 市场阶段分析配置 =====
 regime:
-  benchmark_code: "SH600000"   # 基准股票代码（用于判断市场阶段）
+  benchmark_code: "SH000300"   # 基准指数代码（沪深300指数，Phase C 修复后使用真实指数）
   benchmark_field: "close"     # 基准价格字段
   ma_window: 60                # 均线窗口
   vol_window: 60               # 波动率窗口

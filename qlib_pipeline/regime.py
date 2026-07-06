@@ -181,14 +181,22 @@ KEY_YEARS = {
 
 
 def key_year_backtest(config: dict, years: Optional[List[str]] = None,
-                      output_dir: str = "output/key_years") -> pd.DataFrame:
+                      output_dir: str = "output/key_years",
+                      pretrained_rid: Optional[str] = None) -> pd.DataFrame:
     """
     Run independent backtest for key years.
+
+    支持两种模式：
+      1. 样本外独立回测（推荐）：传入 pretrained_rid，用预训练模型在指定年份做纯测试
+      2. 独立年份训练+测试（默认）：每年独立训练（用于快速诊断）
+
+    模式 1 满足第 10.2 节要求：在一个未在训练中使用的市场阶段上进行独立回测。
 
     Args:
         config: workflow config dict
         years: list of years to backtest (default: KEY_YEARS)
         output_dir: output directory
+        pretrained_rid: 预训练模型 recorder_id（可选，传入则使用样本外模式）
 
     Returns:
         DataFrame with per-year metrics
@@ -222,10 +230,25 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
         "kwargs": {"loss": "mse", "num_threads": 20},
     })
 
+    # 样本外模式：加载预训练模型
+    pretrained_model = None
+    if pretrained_rid:
+        logger.info("样本外独立回测模式: 使用预训练模型 %s", pretrained_rid)
+        try:
+            pretrained_model = R.get_recorder(recorder_id=pretrained_rid).load_object("params.pkl")
+            logger.info("  → 预训练模型加载成功")
+        except Exception as e:
+            logger.error("  → 预训练模型加载失败: %s，回退到独立训练模式", e)
+            pretrained_rid = None
+
     results = []
     for year in years:
         start, end = KEY_YEARS.get(year, (f"{year}-01-01", f"{year}-12-31"))
-        logger.info("关键年份回测: %s (%s ~ %s)", year, start, end)
+
+        if pretrained_model is not None:
+            logger.info("关键年份样本外回测: %s (%s ~ %s)", year, start, end)
+        else:
+            logger.info("关键年份独立回测: %s (%s ~ %s)", year, start, end)
 
         try:
             handler_cfg = {
@@ -252,7 +275,7 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
                     "kwargs": {
                         "handler": handler_cfg,
                         "segments": {
-                            "train": [start, end],
+                            "train": [start, start],  # 仅用于初始化，实际训练用预训练模型
                             "test": [start, end],
                         },
                     },
@@ -260,13 +283,22 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
             }
 
             dataset = init_instance_by_config(task["dataset"])
-            model = init_instance_by_config(task["model"])
 
             with R.start(experiment_name=f"key_year_{year}"):
-                model.fit(dataset)
+                if pretrained_model is not None:
+                    # 样本外模式：跳过训练，直接使用预训练模型
+                    model = pretrained_model
+                    logger.info("  → 跳过训练（使用预训练模型），直接预测")
+                else:
+                    model = init_instance_by_config(task["model"])
+                    model.fit(dataset)
+
                 sr = SignalRecord(model, dataset, R.get_recorder())
                 sr.generate()
 
+                # 从配置中读取 benchmark，优先使用 backtest 配置
+                bt_config = config.get("backtest", {}).get("backtest", {})
+                benchmark = bt_config.get("benchmark", config.get("regime", {}).get("benchmark_code", "SH000300"))
                 port_config = {
                     "strategy": {
                         "class": "TopkDropoutStrategy",
@@ -277,36 +309,55 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
                         "start_time": start,
                         "end_time": end,
                         "account": 100000000,
-                        "benchmark": "600000",
-                        "exchange_kwargs": {
-                            "freq": "day", "limit_threshold": 0.095,
-                            "deal_price": "close", "open_cost": 0.0005,
-                            "close_cost": 0.0015, "min_cost": 5,
-                        },
+                        "benchmark": benchmark,
+                        "exchange_kwargs": {"open_cost": 0.0005, "close_cost": 0.0015, "min_cost": 5},
                     },
                 }
+
                 par = PortAnaRecord(R.get_recorder(), port_config, "day")
                 par.generate()
                 rid = R.get_recorder().id
 
-            results.append({
-                "year": year,
-                "start": start,
-                "end": end,
-                "recorder_id": rid,
-                "status": "success",
-            })
-            logger.info("  年份 %s 完成: rid=%s", year, rid)
+                logger.info("  → 回测完成, recorder_id=%s", rid)
+
+                # 记录到 ExperimentTracker
+                try:
+                    from research.experiment_tracker import ExperimentTracker
+                    tracker = ExperimentTracker()
+                    tracker.log_experiment(
+                        config=config,
+                        metrics={
+                            "recorder_id": rid,
+                            "pretrained_rid": pretrained_rid,
+                            "year": year,
+                            "mode": "out_of_sample" if pretrained_model is not None else "in_sample",
+                        },
+                        phase="confirmation" if pretrained_model is not None else "exploration",
+                        description=f"key_year_{year}_{'oos' if pretrained_model is not None else 'is'}",
+                        recorder_id=rid,
+                        test_data_range=(start, end),
+                    )
+                except ImportError:
+                    pass
+
+                results.append({
+                    "year": year,
+                    "start": start,
+                    "end": end,
+                    "mode": "out_of_sample" if pretrained_model is not None else "in_sample",
+                    "pretrained_rid": pretrained_rid,
+                    "recorder_id": rid,
+                })
 
         except Exception as e:
+            logger.error("关键年份 %s 回测失败: %s", year, e)
             results.append({
                 "year": year,
                 "start": start,
                 "end": end,
-                "status": "failed",
+                "mode": "out_of_sample" if pretrained_model is not None else "in_sample",
                 "error": str(e),
             })
-            logger.error("  年份 %s 失败: %s", year, e)
 
     df = pd.DataFrame(results)
     output_path = Path(output_dir)

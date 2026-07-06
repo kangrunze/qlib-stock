@@ -24,11 +24,12 @@ python run.py update
 | 模块 | 功能 | 命令 |
 |------|------|------|
 | 数据管理 | AKShare 下载 / CSV 转 Qlib bin / 增量更新 | `python run.py data` / `python run.py update` |
-| 模型训练 | LightGBM / XGBoost / CatBoost + Alpha158/360 | `python run.py train` |
+| 模型训练 | Qlib LGBModel + Alpha158/360 | `python run.py train` |
 | 回测分析 | TopkDropoutStrategy + 图表生成 | `python run.py backtest --rid <ID>` |
 | 选股推荐 | Top-K 股票推荐 + 历史验证 | `python run.py pick` / `python run.py validate-picks` |
 | 稳健性验证 | Walk-Forward / IC 稳定性 / 特征漂移 | `python run.py rolling` / `python run.py ic-stability` / `python run.py drift` |
 | 鲁棒性深化 | TSCV / 市场阶段分析 / 敏感性分析 | `python run.py tscv` / `python run.py regime` / `python run.py sensitivity` |
+| 模型能力恢复 | Optuna 超参搜索 / SHAP 可解释性 | `python run.py optuna` / `python run.py explain` |
 
 ## 项目结构
 
@@ -38,7 +39,8 @@ qlib-stock/
 ├── config/
 │   └── settings.yaml            # 全局配置（数据路径、模型参数、策略等）
 ├── qlib_pipeline/
-│   ├── workflow_config.yaml     # Qlib 工作流配置
+│   ├── workflow_config.yaml     # Qlib 工作流配置（默认）
+│   ├── workflow_config_longterm.yaml  # 中长周期配置
 │   ├── train.py                 # 训练管线
 │   ├── dataset.py               # 配置加载器
 │   ├── backtest.py              # 回测分析
@@ -48,15 +50,20 @@ qlib-stock/
 │   ├── tscv.py                  # 时序交叉验证
 │   ├── regime.py                # 市场阶段分析
 │   └── sensitivity.py           # 超参数敏感性
+├── research/                    # 研究分析模块
+│   ├── significance.py          # 统计显著性检验
+│   ├── risk_model.py            # 风险模型
+│   ├── attribution.py           # 收益归因
+│   ├── portfolio_constructor.py # 行业中性化策略
+│   ├── capacity.py              # 策略容量分析
+│   ├── experiment_tracker.py    # 实验追踪
+│   └── explain.py               # SHAP 可解释性
+├── tuning/                      # 超参数搜索
+│   └── optuna_search.py         # Optuna 贝叶斯优化
 ├── data_center/                 # 数据层
 │   ├── daily_update.py          # 每日增量更新
 │   ├── data_store.py            # 统一数据存储接口
 │   └── csv_loader.py            # CSV 数据加载器
-├── model/                       # 自研模型
-│   ├── lgb_model.py             # LightGBM
-│   ├── xgb_model.py             # XGBoost
-│   ├── cat_model.py             # CatBoost
-│   └── ensemble.py              # 模型集成
 ├── docs/                        # 文档
 │   ├── user-guide.md            # 运行说明
 │   ├── configuration.md         # 配置参考
@@ -70,6 +77,8 @@ qlib-stock/
     ├── rolling/                 # 滚动验证
     ├── tscv/                    # 交叉验证
     ├── sensitivity/             # 敏感性分析
+    ├── optuna/                  # 超参搜索结果
+    ├── shap/                    # SHAP 分析报告
     └── validation/              # 选股验证
 ```
 
@@ -81,4 +90,4 @@ qlib-stock/
 
 ## 技术栈
 
-Python 3.10 · Qlib 0.9.7 · LightGBM · XGBoost · CatBoost · Plotly · Pandas · NumPy 1.x
+Python 3.10 · Qlib 0.9.7 · LightGBM · Pandas · NumPy 1.x · Plotly · AKShare

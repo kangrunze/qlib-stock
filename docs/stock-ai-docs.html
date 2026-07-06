@@ -381,8 +381,6 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
     <li><a href="#config" class="toc-h2">4. 配置文件详解</a></li>
     <li><a href="#config-workflow" class="toc-h3">4.1 workflow_config.yaml 核心</a></li>
     <li><a href="#config-settings" class="toc-h3">4.2 settings.yaml 全局</a></li>
-    <li><a href="#config-model" class="toc-h3">4.3 model_config.yaml</a></li>
-    <li><a href="#config-universe" class="toc-h3">4.4 stock_universe.yaml</a></li>
     <li><a href="#modules" class="toc-h2">5. 模块详解</a></li>
     <li><a href="#module-data" class="toc-h3">5.1 数据中心</a></li>
     <li><a href="#module-feature" class="toc-h3">5.2 特征工程（精简）</a></li>
@@ -448,9 +446,7 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
 <div class="file-tree">
 <span class="dir">qlib-stock/</span>
   <span class="dir">config/</span>              <span class="comment"># 配置文件</span>
-    settings.yaml           <span class="comment"># 全局配置</span>
-    model_config.yaml       <span class="comment"># 模型超参</span>
-    stock_universe.yaml     <span class="comment"># 选股池</span>
+    settings.yaml           <span class="comment"># 全局配置（唯一配置源）</span>
   <span class="dir">data_center/</span>         <span class="comment"># 数据中心</span>
     akshare_client.py       <span class="comment"># AKShare API 封装</span>
     download_history.py     <span class="comment"># 全量历史数据下载</span>
@@ -458,7 +454,8 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
     daily_update.py         <span class="comment"># 日度增量更新</span>
     data_validator.py       <span class="comment"># 数据质量校验</span>
   <span class="dir">qlib_pipeline/</span>       <span class="comment"># Qlib 核心管线</span>
-    workflow_config.yaml    <span class="comment"># 统一配置（唯一入口）</span>
+    workflow_config.yaml    <span class="comment"># 统一配置（默认）</span>
+    workflow_config_longterm.yaml <span class="comment"># 中长周期配置</span>
     dataset.py              <span class="comment"># DatasetH 构建</span>
     train.py                <span class="comment"># 标准 Workflow 训练</span>
     backtest.py             <span class="comment"># 回测 + Plotly 图表</span>
@@ -470,26 +467,17 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
     tscv.py                 <span class="comment"># Purged K-Fold TSCV</span>
     regime.py               <span class="comment"># 市场阶段 + 关键年份回测</span>
     sensitivity.py          <span class="comment"># 超参数敏感性分析</span>
-  <span class="dir">feature_engine/</span>      <span class="comment"># 自定义因子（精简）</span>
-    fundamental.py          <span class="comment"># 基本面代理变量</span>
-    fund_flow.py            <span class="comment"># 资金流因子（占位）</span>
-    industry.py             <span class="comment"># 行业因子（占位）</span>
-    news.py                 <span class="comment"># 新闻情绪（占位）</span>
-    announcements.py        <span class="comment"># 公告事件（占位）</span>
-    alternative_data.py     <span class="comment"># 另类数据（占位）</span>
-    factor_store.py         <span class="comment"># 因子存储管理</span>
-  <span class="dir">model/</span>               <span class="comment"># 模型平台</span>
-    lgb_model.py            <span class="comment"># LightGBM</span>
-    xgb_model.py            <span class="comment"># XGBoost</span>
-    cat_model.py            <span class="comment"># CatBoost</span>
-    ensemble.py             <span class="comment"># 集成模型</span>
-    optuna_tuner.py         <span class="comment"># 自动调参</span>
-    shap_analysis.py        <span class="comment"># 特征重要性</span>
-    model_registry.py       <span class="comment"># 模型版本管理</span>
-  <span class="dir">strategy/</span> + <span class="dir">backtest/</span>    <span class="comment"># 策略 + 回测 (Qlib 已替代)</span>
-  <span class="dir">evaluate/</span>            <span class="comment"># 评估分析</span>
-  <span class="dir">scheduler/</span>           <span class="comment"># 自动化调度</span>
-  run.py                   <span class="comment"># 统一入口（train/backtest/full/data/rolling/...）</span>
+  <span class="dir">research/</span>            <span class="comment"># 研究分析模块</span>
+    significance.py         <span class="comment"># 统计显著性检验</span>
+    risk_model.py           <span class="comment"># 风险模型</span>
+    attribution.py          <span class="comment"># 收益归因</span>
+    portfolio_constructor.py <span class="comment"># 行业中性化策略</span>
+    capacity.py             <span class="comment"># 策略容量分析</span>
+    experiment_tracker.py   <span class="comment"># 实验追踪</span>
+    explain.py              <span class="comment"># SHAP 可解释性</span>
+  <span class="dir">tuning/</span>              <span class="comment"># 超参数搜索</span>
+    optuna_search.py        <span class="comment"># Optuna 贝叶斯优化</span>
+  run.py                   <span class="comment"># 统一入口（train/backtest/full/data/rolling/optuna/explain/...）</span>
   requirements.txt         <span class="comment"># Python 依赖</span>
 </div>
 
@@ -519,7 +507,7 @@ mark.key { background: none; color: var(--accent); font-weight: 600; }
 <thead><tr><th>层级</th><th>模块</th><th>核心功能</th><th>Qlib 组件</th></tr></thead>
 <tbody>
 <tr><td><strong>数据层</strong></td><td>data_center</td><td>AKShare 下载、CSV/Parquet/QLib 三后端、DataStore 统一接口</td><td>D.features()</td></tr>
-<tr><td><strong>特征层</strong></td><td>qlib_pipeline + feature_engine</td><td>Alpha158/Alpha360 标准因子 + 自定义基本面/资金流/另类数据</td><td>Alpha158/Alpha360 Handler</td></tr>
+<tr><td><strong>特征层</strong></td><td>qlib_pipeline</td><td>Alpha158/Alpha360 标准因子</td><td>Alpha158/Alpha360 Handler</td></tr>
 <tr><td><strong>管线层</strong></td><td>qlib_pipeline</td><td>DatasetH 构建、LGBModel 训练、滚动 Walk-Forward、TSCV</td><td>DatasetH + LGBModel + Workflow</td></tr>
 <tr><td><strong>回测层</strong></td><td>qlib_pipeline</td><td>信号生成、TopK 选股、回测执行、绩效分析</td><td>SignalRecord + PortAnaRecord + TopkDropoutStrategy</td></tr>
 <tr><td><strong>稳健性</strong></td><td>qlib_pipeline</td><td>PSI 漂移、ICIR/IC 衰减、市场阶段、超参数敏感性</td><td>Rolling + drift + ic_stability</td></tr>
@@ -576,7 +564,7 @@ python -c "import akshare; print(akshare.__version__)"</code></pre>
 <!-- Chapter 4: Config -->
 <h2 id="config">4. 配置文件详解</h2>
 
-<p>项目采用 <strong>配置即代码</strong> 理念，<code>qlib_pipeline/workflow_config.yaml</code> 是唯一的配置入口，覆盖所有参数。修改后无需重启，下次运行自动生效。旧版 <code>config/settings.yaml</code> 和 <code>config/model_config.yaml</code> 保留用于向后兼容。</p>
+<p>项目采用 <strong>配置即代码</strong> 理念，<code>qlib_pipeline/workflow_config.yaml</code> 是唯一的配置入口，覆盖所有参数。所有模型超参、数据加载、回测参数统一在此管理，修改后下次运行自动生效。</p>
 
 <h3 id="config-workflow">4.1 workflow_config.yaml — 核心配置（推荐）</h3>
 
@@ -672,18 +660,8 @@ segments:
   <p>AKShare 对并发有限制，<code>max_workers</code> 过大可能导致请求被拒。推荐从 5 开始测试，逐步增大到 10-15。如果频繁出现连接超时，减小到 3-5。</p>
 </div>
 
-<h4>选股池配置 (stock_universe)</h4>
-<div class="table-wrap">
-<table>
-<thead><tr><th>参数名</th><th>默认值</th><th>说明</th><th>调参建议</th></tr></thead>
-<tbody>
-<tr><td><code>exclude_boards</code></td><td><code>["北交所"]</code></td><td>排除板块</td><td>北交所流动性差，建议排除</td></tr>
-<tr><td><code>min_listed_days</code></td><td><code>250</code></td><td>最小上市天数</td><td>新股波动大，250天约1年</td></tr>
-<tr><td><code>exclude_st</code></td><td><code>true</code></td><td>排除 ST 股票</td><td>建议始终排除</td></tr>
-<tr><td><code>exclude_suspended</code></td><td><code>true</code></td><td>排除停牌股票</td><td>建议始终排除</td></tr>
-</tbody>
-</table>
-</div>
+<h4>选股池配置 (stock_universe — 已整合至 workflow_config.yaml)</h4>
+<p>选股池配置已从独立的 <code>stock_universe.yaml</code> 整合到 <code>qlib_pipeline/workflow_config.yaml</code> 中，通过 <code>stock_list</code> 和 <code>segments</code> 参数控制。股票池默认为沪深300成分股。</p>
 
 <h4>数据集划分 (dataset_split)</h4>
 <div class="table-wrap">
@@ -787,97 +765,9 @@ segments:
 </table>
 </div>
 
-<h3 id="config-model">4.2 model_config.yaml — 模型超参</h3>
+<h3 id="config-model">4.2 模型超参 — 已整合至 workflow_config.yaml</h3>
 
-<h4>LightGBM 参数</h4>
-<div class="table-wrap">
-<table>
-<thead><tr><th>参数</th><th>默认值</th><th>说明</th><th>调参范围</th></tr></thead>
-<tbody>
-<tr><td><code>learning_rate</code></td><td>0.05</td><td>学习率</td><td>0.01 ~ 0.2（小值更稳定）</td></tr>
-<tr><td><code>max_depth</code></td><td>10</td><td>树最大深度</td><td>5 ~ 15（深树易过拟合）</td></tr>
-<tr><td><code>num_leaves</code></td><td>128</td><td>叶子节点数</td><td>31 ~ 255（通常 2^max_depth）</td></tr>
-<tr><td><code>n_estimators</code></td><td>1000</td><td>迭代次数</td><td>500 ~ 2000（早停控制实际轮数）</td></tr>
-<tr><td><code>subsample</code></td><td>0.8</td><td>样本采样比例</td><td>0.6 ~ 1.0（防止过拟合）</td></tr>
-<tr><td><code>colsample_bytree</code></td><td>0.8</td><td>特征采样比例</td><td>0.6 ~ 1.0</td></tr>
-<tr><td><code>reg_alpha</code></td><td>0.1</td><td>L1 正则化</td><td>0 ~ 1.0</td></tr>
-<tr><td><code>reg_lambda</code></td><td>0.1</td><td>L2 正则化</td><td>0 ~ 1.0</td></tr>
-<tr><td><code>min_child_samples</code></td><td>20</td><td>叶子最小样本数</td><td>10 ~ 100</td></tr>
-</tbody>
-</table>
-</div>
-
-<h4>XGBoost 参数</h4>
-<div class="table-wrap">
-<table>
-<thead><tr><th>参数</th><th>默认值</th><th>说明</th><th>调参范围</th></tr></thead>
-<tbody>
-<tr><td><code>max_depth</code></td><td>8</td><td>树深度</td><td>3 ~ 10</td></tr>
-<tr><td><code>learning_rate</code></td><td>0.05</td><td>学习率</td><td>0.01 ~ 0.2</td></tr>
-<tr><td><code>subsample</code></td><td>0.8</td><td>样本采样</td><td>0.6 ~ 1.0</td></tr>
-<tr><td><code>colsample_bytree</code></td><td>0.8</td><td>特征采样</td><td>0.6 ~ 1.0</td></tr>
-</tbody>
-</table>
-</div>
-
-<h4>CatBoost 参数</h4>
-<div class="table-wrap">
-<table>
-<thead><tr><th>参数</th><th>默认值</th><th>说明</th><th>调参范围</th></tr></thead>
-<tbody>
-<tr><td><code>depth</code></td><td>8</td><td>树深度</td><td>4 ~ 10</td></tr>
-<tr><td><code>learning_rate</code></td><td>0.05</td><td>学习率</td><td>0.01 ~ 0.2</td></tr>
-<tr><td><code>l2_leaf_reg</code></td><td>3.0</td><td>L2 正则</td><td>1 ~ 10</td></tr>
-<tr><td><code>iterations</code></td><td>1000</td><td>迭代次数</td><td>500 ~ 2000</td></tr>
-</tbody>
-</table>
-</div>
-
-<h4>集成权重 (ensemble)</h4>
-<div class="table-wrap">
-<table>
-<thead><tr><th>参数</th><th>默认值</th><th>说明</th><th>调参建议</th></tr></thead>
-<tbody>
-<tr><td><code>weights</code></td><td>[0.5, 0.3, 0.2]</td><td>[LGB, XGB, Cat]</td><td>根据验证集 RankIC 动态调整</td></tr>
-</tbody>
-</table>
-</div>
-
-<div class="callout success">
-  <div class="callout-title">集成权重调参策略</div>
-  <p>先在验证集上分别测试三个模型的 RankIC，按 IC 比例分配权重。例如 LGB 的 RankIC=0.06，XGB=0.05，Cat=0.04，则权重可设为 [0.43, 0.36, 0.21]。定期（每月）重新评估并调整。</p>
-</div>
-
-<h4>Optuna 调参配置</h4>
-<div class="table-wrap">
-<table>
-<thead><tr><th>参数</th><th>默认值</th><th>说明</th><th>调参建议</th></tr></thead>
-<tbody>
-<tr><td><code>n_trials</code></td><td>50</td><td>搜索试验次数</td><td>50~200，越多越准但越慢</td></tr>
-<tr><td><code>cv_folds</code></td><td>5</td><td>交叉验证折数</td><td>时序数据用 TimeSeriesSplit</td></tr>
-<tr><td><code>direction</code></td><td>maximize</td><td>优化方向</td><td>maximize RankIC</td></tr>
-<tr><td><code>timeout</code></td><td>3600</td><td>超时秒数</td><td>防止运行过久</td></tr>
-</tbody>
-</table>
-</div>
-
-<h3 id="config-universe">4.3 stock_universe.yaml — 选股池配置</h3>
-
-<div class="table-wrap">
-<table>
-<thead><tr><th>参数</th><th>默认值</th><th>说明</th><th>调参建议</th></tr></thead>
-<tbody>
-<tr><td><code>exclude_boards</code></td><td>["北交所"]</td><td>排除的板块</td><td>北交所流动性不足建议排除</td></tr>
-<tr><td><code>min_listed_days</code></td><td>250</td><td>最小上市天数</td><td>新股波动大，设 250（约1年）</td></tr>
-<tr><td><code>exclude_st</code></td><td>true</td><td>排除 ST</td><td>始终 true</td></tr>
-<tr><td><code>exclude_suspended</code></td><td>true</td><td>排除停牌</td><td>始终 true</td></tr>
-<tr><td><code>min_price</code></td><td>1.0</td><td>最低股价</td><td>过滤仙股和退市风险股</td></tr>
-<tr><td><code>max_price</code></td><td>1000.0</td><td>最高股价</td><td>一般不设上限</td></tr>
-<tr><td><code>index_priority</code></td><td>[000300, 000905, 000852]</td><td>指数优先级</td><td>沪深300/中证500/中证1000</td></tr>
-<tr><td><code>industry_standard</code></td><td>shenwan_2014</td><td>行业分类标准</td><td>申万2014版行业分类</td></tr>
-</tbody>
-</table>
-</div>
+<p>模型超参配置已从独立的 <code>model_config.yaml</code> 整合到 <code>qlib_pipeline/workflow_config.yaml</code> 的 <code>qlib_lgb</code> 段中，通过 <code>python run.py optuna</code> 命令进行超参数搜索。详见 <a href="configuration.md">配置参考</a>。</p>
 
 <!-- Chapter 5: Modules -->
 <h2 id="modules">5. 模块详解</h2>
@@ -940,7 +830,7 @@ report = validator.validate_all("data/daily/")
 print(report.summary())</code></pre>
 
 <h4>data_store.py — 统一数据存储接口（核心新增）</h4>
-<p><mark class="key">DataStore</mark> 是数据访问的统一入口，屏蔽底层格式差异。上层代码（train.py / daily_run.py / generate_charts.py / backtest）统一通过此接口访问数据，修改 <code>settings.yaml</code> 中的 <code>data_format</code> 即可切换底层格式，<strong>无需改动任何业务代码</strong>。</p>
+<p><mark class="key">DataStore</mark> 是数据访问的统一入口，屏蔽底层格式差异。上层代码统一通过此接口访问数据，修改 <code>settings.yaml</code> 中的 <code>data_format</code> 即可切换底层格式，<strong>无需改动任何业务代码</strong>。</p>
 
 <pre><code>from data_center.data_store import DataStore
 
@@ -995,12 +885,14 @@ with DuckDBStore() as store:
     # 获取某日全市场快照
     df = store.get_market_snapshot("2024-01-01", top_n=100)</code></pre>
 
-<h3 id="module-feature">5.2 特征工程 (feature_engine) — 精简版</h3>
+<h3 id="module-feature">5.2 特征工程 — Qlib Alpha158/Alpha360 原生支持</h3>
 
 <div class="callout success">
-  <div class="callout-title">架构变更说明（v2.1）</div>
-  <p>技术指标（technical.py）、Alpha 因子（alpha_factors.py）、横截面因子（cross_section.py）<strong>已移除</strong>——这些功能全部由 Qlib Alpha158/Alpha360 DataHandler 原生覆盖，质量更高且维护成本更低。feature_engine/ 现在只保留 Alpha158 无法覆盖的<strong>自定义因子</strong>。</p>
+  <div class="callout-title">架构变更说明（v3.0）</div>
+  <p>所有基础特征生成完全由 Qlib Alpha158/Alpha360 DataHandler 原生覆盖，无需自研特征。自定义分析请使用 <code>research/</code> 模块。</p>
 </div>
+
+<p>系统默认使用 Alpha158 特征处理器（158个技术因子），通过 <code>workflow_config.yaml</code> 中的 <code>handler</code> 参数切换。</p>
 
 <h4>fundamental.py — 基本面代理变量</h4>
 
@@ -1167,82 +1059,45 @@ python run.py sensitivity --param learning_rate --values 0.01,0.05,0.10,0.15
 # 输出：各参数组合的 IC/RankIC 变化热力图
 # 报告路径：output/sensitivity/sensitivity_report.csv</code></pre>
 
-<h3 id="module-model">5.5 模型平台 (model)</h3>
+<h3 id="module-model">5.5 模型 (Qlib LGBModel + 研究分析)</h3>
 
-<h4>集成模型训练</h4>
+<h4>模型训练</h4>
 
-<pre><code>from model.ensemble import EnsembleModel
+<pre><code># 使用 Qlib LGBModel 训练（自动读取 workflow_config.yaml）
+python run.py train
 
-# 创建集成模型（自动读取 model_config.yaml）
-model = EnsembleModel()
+# 完整流程：训练 + 回测 + 选股
+python run.py full</code></pre>
 
-# 训练（自动训练 LGB + XGB + CatBoost）
-model.fit(X_train, y_train, X_valid=X_val, y_valid=y_val)
+<h4>Optuna 超参数搜索</h4>
 
-# 预测
-predictions = model.predict(X_test)
+<pre><code># 贝叶斯优化搜索最优超参数组合
+python run.py optuna --n-trials 100 --timeout 3600
 
-# 获取各模型独立预测
-individual = model.get_individual_predictions(X_test)
-# individual['lgb'], individual['xgb'], individual['cat']
+# 结果保存在 output/optuna/</code></pre>
 
-# 保存/加载
-model.save_models("models/ensemble_v1/")
-model.load_models("models/ensemble_v1/")
+<h4>SHAP 可解释性分析</h4>
 
-# 获取特征重要性
-importance = model.get_feature_importance()</code></pre>
+<pre><code># 基于 SHAP 值的特征重要性分析
+python run.py explain [--rid &lt;recorder_id&gt;]
 
-<h4>Optuna 自动调参</h4>
+# 结果保存在 output/shap/
+#  - shap_importance.csv: 全局特征重要性排名
+#  - shap_summary.png: SHAP summary plot</code></pre>
 
-<pre><code>from model.optuna_tuner import OptunaTuner
+<h4>研究分析模块</h4>
 
-tuner = OptunaTuner()
+<pre><code># 统计显著性检验（Newey-West + 多重检验校正）
+from research import newey_west_test, multiple_testing_correction
 
-# 调优 LightGBM（目标：最大化 RankIC）
-best_params = tuner.tune_lgb(X_train, y_train, X_val, y_val, n_trials=50)
+# 行业中性化策略（继承 Qlib TopkDropoutStrategy）
+from research import IndustryConstrainedTopkStrategy
 
-# 调优全部模型
-results = tuner.tune_all(X_train, y_train, X_val, y_val, n_trials=50)
+# 收益归因分析
+from research import decompose_excess_return, attribution_report
 
-# 使用最优参数训练
-from model.lgb_model import LightGBMModel
-model = LightGBMModel(**best_params)
-model.fit(X_train, y_train, X_valid=X_val, y_valid=y_val)</code></pre>
-
-<h4>SHAP 特征分析</h4>
-
-<pre><code>from model.shap_analysis import SHAPAnalyzer
-
-analyzer = SHAPAnalyzer()
-shap_values, importance = analyzer.analyze(model, X_sample)
-
-# Top 20 重要特征
-top_features = analyzer.get_top_features(shap_values, X_sample, n=20)
-
-# 保存摘要图
-analyzer.plot_summary(shap_values, X_sample, save_path="output/shap_summary.png")</code></pre>
-
-<h4>模型注册表</h4>
-
-<pre><code>from model.model_registry import ModelRegistry
-
-registry = ModelRegistry()
-
-# 保存模型（自动打版本号）
-registry.save_model(model, name="stock_selector", metrics={"rank_ic": 0.06})
-
-# 加载最新模型
-model = registry.load_model("stock_selector")
-
-# 加载指定版本
-model = registry.load_model("stock_selector", version="v3")
-
-# 查看历史版本
-versions = registry.list_models("stock_selector")
-
-# 回滚到旧版本
-registry.rollback_model("stock_selector", target_version="v2")</code></pre>
+# 策略容量检查
+from research import check_single_stock_capacity, check_portfolio_capacity</code></pre>
 
 <!-- Chapter 6: Usage -->
 <h2 id="usage">6. 使用指南</h2>
@@ -1586,7 +1441,7 @@ python run.py data --convert --csv-dir D:/data</code></pre>
 </div>
 
 <h4>Q9: 如何添加自定义因子？</h4>
-<p>在 <code>feature_engine/</code> 目录下创建新模块（如 <code>my_factors.py</code>），实现因子计算逻辑后，在 <code>workflow_config.yaml</code> 的 <code>features.enabled_categories</code> 中添加即可。Alpha158 已覆盖的因子不需要重复实现。</p>
+<p>在 <code>research/</code> 目录下创建新模块，实现分析逻辑后，通过 <code>python run.py</code> 的命令行接口调用即可。</p>
 
 <h3 id="known-issues">9.1 已知问题与兼容性</h3>
 <div class="table-wrap">

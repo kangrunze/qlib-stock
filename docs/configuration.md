@@ -1,20 +1,20 @@
 # 配置参考
 
-> 文档版本: v3.0  
+> 文档版本: v3.1  
 > 更新日期: 2026-07-06
 
 ---
 
 ## 配置体系概览
 
-项目使用两层配置：
+项目使用两层配置，职责明确：
 
 | 配置文件 | 路径 | 用途 | 消费方 |
 |----------|------|------|--------|
-| **settings.yaml** | `config/settings.yaml` | 全局配置：数据路径、模型参数、策略、输出路径等 | `run.py`、`data_center/`、`model/` |
-| **workflow_config.yaml** | `qlib_pipeline/workflow_config.yaml` | Qlib 工作流配置：数据加载、特征处理器、回测参数 | `qlib_pipeline/` 各模块 |
+| **settings.yaml** | `config/settings.yaml` | 全局配置：数据路径、输出路径、策略参数、市场阶段分析参数 | `run.py`（argparse 默认值）、`data_center/`（数据路径）、`cmd_regime` |
+| **workflow_config.yaml** | `qlib_pipeline/workflow_config.yaml` | Qlib 工作流配置：数据加载、特征处理器、模型超参、回测参数 | `qlib_pipeline/` 各模块（train/backtest/rolling/tscv/regime/sensitivity） |
 
-`settings.yaml` 是唯一的全局配置源，所有硬编码参数均已提取到此文件中。`workflow_config.yaml` 专注 Qlib 框架相关配置。
+> ⚠ `settings.yaml:data_source.qlib_dir` 必须与 `workflow_config.yaml:qlib.provider_uri` 保持一致。修改数据目录时请两处同步修改。
 
 ---
 
@@ -26,12 +26,12 @@
 data_source:
   data_format: "csv"           # 数据格式: csv / parquet / qlib
   csv_dir: "D:/data"           # CSV 原始数据目录
-  qlib_dir: "D:/trae/qlib_bin" # Qlib bin 数据目录
+  qlib_dir: "D:/download/qlib_bin" # Qlib bin 数据目录（需与 workflow_config.yaml:qlib.provider_uri 一致）
   start_date: "2005-01-01"     # 数据起始日期
   max_workers: 10              # 并发下载线程数
   retry_max: 3                 # API 请求最大重试次数
   retry_delay: 2               # 重试间隔（秒）
-  incremental_window: 30       # 增量更新覆盖最近N天
+  incremental_window: 30       # 增量更新覆盖最近N天（应对复权修正）
 ```
 
 | 字段 | 消费方 | 说明 |
@@ -60,180 +60,21 @@ output:
 
 所有命令的 `--output-dir` 默认值均从此处读取，可通过命令行参数覆盖。
 
-### 1.3 stock_universe — 选股池配置
-
-```yaml
-stock_universe:
-  exclude_boards: ["北交所"]
-  min_listed_days: 250
-  exclude_st: true
-  exclude_suspended: true
-```
-
-| 字段 | 说明 |
-|------|------|
-| `exclude_boards` | 排除板块列表 |
-| `min_listed_days` | 上市至少 N 个交易日 |
-| `exclude_st` | 排除 ST 股票 |
-| `exclude_suspended` | 排除停牌股票 |
-
-### 1.4 dataset_split — 数据集划分
-
-```yaml
-dataset_split:
-  train_start: "2013-01-01"
-  train_end: "2021-06-30"
-  valid_start: "2021-07-01"
-  valid_end: "2022-12-31"
-  test_start: "2023-01-01"
-  test_end: "2023-12-31"
-  backtest_start: "2024-01-01"
-  backtest_end: "2025-06-30"
-```
-
-### 1.5 features — 特征工程配置
-
-```yaml
-features:
-  enabled_categories:
-    - "trend"           # 趋势类: MA/EMA/MACD/ADX/CCI
-    - "momentum"        # 动量类: RSI/KDJ/WR/MOM
-    - "volatility"      # 波动类: ATR/STD/BB_width
-    - "volume_price"    # 量价类: OBV/MFI/VWAP
-    - "statistical"     # 统计类: Skew/Kurt/Beta/Alpha
-    - "cross_section"   # 横截面: 排名分位数
-  ic_threshold: 0.02
-  corr_threshold: 0.95
-```
-
-### 1.6 labels — 标签配置
-
-```yaml
-labels:
-  types:
-    - name: "ret_20d"        # 未来20日收益率
-      horizon: 20
-    - name: "ret_60d"        # 未来60日收益率
-      horizon: 60
-    - name: "alpha_20d"      # 20日超额收益 vs 中证500
-      horizon: 20
-      benchmark: "000905"
-    - name: "alpha_60d"      # 60日超额收益 vs 中证500
-      horizon: 60
-      benchmark: "000905"
-  primary: "alpha_20d"
-```
-
-### 1.7 model — 模型配置
-
-```yaml
-model:
-  types: ["lightgbm", "xgboost", "catboost"]
-  ensemble_weights: [0.5, 0.3, 0.2]
-  early_stopping_rounds: 50
-  enable_optuna: true
-
-  lightgbm:                  # LightGBM 参数
-    objective: "regression"
-    metric: "rmse"
-    boosting_type: "gbdt"
-    num_leaves: 128
-    max_depth: 10
-    learning_rate: 0.05
-    n_estimators: 1000
-    subsample: 0.8
-    colsample_bytree: 0.8
-    reg_alpha: 0.1
-    reg_lambda: 0.1
-    min_child_samples: 20
-    random_state: 42
-    n_jobs: -1
-
-  xgboost:                   # XGBoost 参数
-    objective: "reg:squarederror"
-    eval_metric: "rmse"
-    max_depth: 8
-    learning_rate: 0.05
-    n_estimators: 1000
-    subsample: 0.8
-    colsample_bytree: 0.8
-    reg_alpha: 0.1
-    reg_lambda: 0.1
-    random_state: 42
-    n_jobs: -1
-
-  catboost:                  # CatBoost 参数
-    loss_function: "RMSE"
-    iterations: 1000
-    learning_rate: 0.05
-    depth: 8
-    l2_leaf_reg: 3.0
-    random_seed: 42
-    thread_count: -1
-
-  optuna:                    # 超参搜索
-    n_trials: 50
-    cv_folds: 5
-    direction: "maximize"
-    timeout: 3600
-
-  shap:                      # SHAP 可解释性
-    max_display: 20
-    sample_size: 1000
-
-  training:                  # 训练配置
-    test_size: 0.2
-    validation_size: 0.2
-    random_state: 42
-    shuffle: false
-
-  registry:                  # 模型注册
-    storage_path: "models/"
-    metadata_filename: "meta.json"
-    model_filename: "model.pkl"
-```
-
-消费方：`model/lgb_model.py`、`model/xgb_model.py`、`model/cat_model.py`、`model/ensemble.py` 均从 `settings.yaml` 的 `model` section 读取参数。
-
-### 1.8 strategy — 策略配置
+### 1.3 strategy — 策略全局参数
 
 ```yaml
 strategy:
-  top_k: 30                          # 选股数量
-  rebalance_freq: "monthly"          # 调仓频率: daily/weekly/monthly/quarterly
-  weight_method: "equal"             # 权重方法: equal/score_weighted/risk_parity
-  industry_neutral: true             # 行业中性化
-  max_stocks_per_industry: 5         # 单行业最大持仓数
+  top_k: 30                    # 选股推荐数量（argparse --pick-topk/--topk 默认值）
 ```
 
-### 1.9 risk — 风险控制
-
-```yaml
-risk:
-  max_position_pct: 0.10             # 单票最大仓位 10%
-  max_industry_pct: 0.30             # 单行业最大仓位 30%
-  stop_loss_pct: 0.08                # 止损比例 8%
-```
-
-### 1.10 backtest — 回测配置
-
-```yaml
-backtest:
-  initial_cash: 1000000              # 初始资金 100万
-  commission_buy: 0.00025            # 买入手续费 万2.5
-  commission_sell: 0.00125           # 卖出手续费 含印花税
-  slippage_bps: 0.001                # 滑点 0.1%
-  benchmark: "000905"                # 基准指数 中证500
-```
-
-### 1.11 regime — 市场阶段分析
+### 1.4 regime — 市场阶段分析配置
 
 ```yaml
 regime:
-  benchmark_code: "SH600000"         # 基准股票代码
-  benchmark_field: "close"           # 基准价格字段
-  ma_window: 60                      # 均线窗口
-  vol_window: 60                     # 波动率窗口
+  benchmark_code: "SH000300"   # 基准指数代码（沪深300指数，Phase C 修复后使用真实指数）
+  benchmark_field: "close"     # 基准价格字段
+  ma_window: 60                # 均线窗口
+  vol_window: 60               # 波动率窗口
 ```
 
 消费方：`run.py:cmd_regime()` 使用这些配置读取基准数据和计算参数。
@@ -248,80 +89,167 @@ regime:
 
 ```yaml
 qlib:
-  provider_uri: "D:/trae/qlib_bin"   # Qlib bin 数据目录
+  provider_uri: "D:/download/qlib_bin"   # Qlib bin 数据目录
   region: "cn"                        # 中国区
 ```
 
-`provider_uri` 必须与 `settings.yaml` 中 `data_source.qlib_dir` 一致。
+> ⚠ `provider_uri` 必须与 `config/settings.yaml:data_source.qlib_dir` 保持一致。
 
-### 2.2 data_handler — 数据处理器
+### 2.2 data_source — 数据源（仅用于数据转换）
+
+```yaml
+data_source:
+  data_format: "csv"
+  csv_dir: "D:/data"
+  start_date: "2005-01-01"
+  max_workers: 10
+  retry_max: 3
+  retry_delay: 2
+```
+
+消费方：`run_qlib_workflow.py`（数据下载和 CSV→bin 转换）。注意此处不包含 `qlib_dir`（已在 `qlib.provider_uri` 定义，避免重复）。
+
+### 2.3 stock_universe — 选股池过滤
+
+```yaml
+stock_universe:
+  exclude_boards: ["北交所"]
+  min_listed_days: 250
+  exclude_st: true
+  exclude_suspended: true
+```
+
+消费方：`run_qlib_workflow.py`（CSV 转 bin 时写入 `instruments/all.txt`）。
+
+### 2.4 data_handler — 数据处理器
 
 ```yaml
 data_handler:
-  class: "DataHandlerLP"
-  kwargs:
-    start_time: "2012-01-01"         # 数据加载起始
-    end_time: "2026-06-25"            # 数据加载截止
-    fit_start_time: "2012-01-01"     # 标准化拟合起始
-    fit_end_time: "2021-06-30"       # 标准化拟合截止（防泄露）
-    instruments: "all"                # 股票池: all / csi300 / csi500
+  freq: "day"
+  start_time: "2020-01-01"         # 数据加载起始
+  end_time: "2026-07-03"            # 数据加载截止
+  fit_start_time: "2020-01-01"     # 标准化拟合起始
+  fit_end_time: "2023-06-30"       # 标准化拟合截止（防泄露）
+  instruments: "csi300"             # 股票池: csi300 / csi500 / all
 ```
 
-### 2.3 dataset — 数据集定义
+消费方：`qlib_pipeline/train.py:build_task()` → 作为 Alpha158/360 handler 的 kwargs。
+
+### 2.5 dataset — 数据集定义
 
 ```yaml
 dataset:
-  class: "DatasetH"
-  handler: "Alpha158"                 # 特征处理器: Alpha158 / Alpha360
-  kwargs:
-    segments:
-      train: ["2013-01-01", "2021-06-30"]
-      valid: ["2021-07-01", "2022-12-31"]
-      test:  ["2023-01-01", "2023-12-31"]
+  handler: "Alpha158"                # 特征处理器: Alpha158 / Alpha360
+  segments:
+    train: ["2020-01-01", "2024-06-30"]
+    valid: ["2024-07-01", "2025-06-30"]
+    test:  ["2025-07-01", "2026-06-25"]
 ```
 
-### 2.4 qlib_lgb — Qlib 原生 LightGBM
+消费方：`qlib_pipeline/train.py:build_task()` → 作为 DatasetH 的 segments 参数。
+
+### 2.6 qlib_lgb — Qlib 原生 LGBModel
 
 ```yaml
 qlib_lgb:
   class: "LGBModel"
+  module_path: "qlib.contrib.model.gbdt"
   kwargs:
     loss: "mse"                       # mse / rank
-    learning_rate: 0.042
-    num_leaves: 256
+    colsample_bytree: 0.8879
+    learning_rate: 0.0421
+    subsample: 0.8789
+    lambda_l1: 205.6999
+    lambda_l2: 580.9768
     max_depth: 8
-    lambda_l1: 206
-    lambda_l2: 581
-    colsample_bytree: 0.8
-    subsample: 0.8
-    early_stopping_rounds: 50
-    num_threads: 4
+    num_leaves: 210
+    num_threads: 20
 ```
 
-### 2.5 backtest — 回测引擎
+消费方：`qlib_pipeline/train.py:build_task()` → 构建 Qlib task dict 的 model 段。
+
+### 2.7 backtest — 回测引擎
 
 ```yaml
 backtest:
+  executor:
+    class: "SimulatorExecutor"
+    module_path: "qlib.backtest.executor"
   strategy:
     class: "TopkDropoutStrategy"
+    module_path: "qlib.contrib.strategy.signal_strategy"
     kwargs:
       topk: 50
       n_drop: 5
   backtest:
-    start_time: "2024-01-01"
-    end_time: "2025-06-30"
-    account: 10000000
-    benchmark: "SH600000"             # 必须使用完整代码格式
+    start_time: "2025-07-01"
+    end_time: "2026-06-25"
+    account: 100000000
+    benchmark: "SH000300"             # 基准指数代码（沪深300指数）
     exchange_kwargs:
       open_cost: 0.0005
       close_cost: 0.0015
 ```
 
+消费方：`run.py:cmd_full()` / `cmd_backtest()` → 传给 Qlib PortAnaRecord。
+
+### 2.8 experiment — 实验配置
+
+```yaml
+experiment:
+  name: "qlib_pipeline"
+  mlflow_tracking_uri: "mlruns/"
+  log_artifacts: true
+  random_seed: 42
+```
+
+消费方：`qlib_pipeline/train.py`（MLflow 实验追踪）。
+
+### 2.9 labels — 预测目标定义
+
+```yaml
+labels:
+  types:
+    - name: "ret_20d"
+      horizon: 20
+      description: "未来20日收益率（适合月度调仓）"
+    - name: "ret_60d"
+      horizon: 60
+      description: "未来60日收益率（适合季度调仓）"
+    - name: "ret_120d"
+      horizon: 120
+      description: "未来120日收益率（适合半年调仓）"
+    - name: "alpha_20d"
+      horizon: 20
+      description: "相对基准超额收益（20日）"
+    - name: "alpha_60d"
+      horizon: 60
+      description: "相对基准超额收益（60日）"
+    - name: "alpha_120d"
+      horizon: 120
+      description: "相对基准超额收益（120日）"
+    - name: "xs_ret_20d"
+      horizon: 20
+      description: "相对全池中位数收益（20日）"
+    - name: "xs_ret_60d"
+      horizon: 60
+      description: "相对全池中位数收益（60日）"
+    - name: "xs_ret_120d"
+      horizon: 120
+      description: "相对全池中位数收益（120日）"
+    - name: "up_down_60d"
+      horizon: 60
+      description: "方向判断标签（60日，诊断用途）"
+  primary: "ret_20d"
+```
+
+消费方：`qlib_pipeline/train.py:build_task()` → 传给 Alpha158/360 handler 生成 label 列。
+
 ---
 
 ## 三、配置优先级
 
-命令行参数 > workflow_config.yaml > settings.yaml
+命令行参数 > workflow_config.yaml > 代码内兜底默认值
 
 ```bash
 # 命令行参数覆盖 workflow_config.yaml

@@ -1,30 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-Qlib Pipeline Model 适配层
+Qlib Pipeline Model 配置
 
-提供 Qlib Workflow 模型配置的快捷创建函数。
-qlib_pipeline 仅负责 Workflow 编排，模型定义统一在 model/ 目录管理。
+提供 LGBModel 配置的兜底创建函数。
+正常运行时，所有超参数来自 workflow_config.yaml 的 qlib_lgb 段；
+本函数仅在配置文件缺失 qlib_lgb 段时作为兜底。
 """
-
-from qlib.utils import init_instance_by_config
 
 
 def create_rank_model(loss: str = "mse", **overrides) -> dict:
-    """创建 LightGBM ranking 模型配置字典"""
+    """创建 LightGBM 模型配置字典（兜底，不含完整超参）。
+
+    正常路径：workflow_config.yaml → qlib_lgb.kwargs → build_task()
+    兜底路径：配置文件缺失 qlib_lgb 段时调用本函数
+    """
     model_cfg = {
         "class": "LGBModel",
         "module_path": "qlib.contrib.model.gbdt",
         "kwargs": {
             "loss": loss,
-            "colsample_bytree": 0.8879,
-            "learning_rate": 0.0421,
-            "subsample": 0.8789,
-            "lambda_l1": 205.6999,
-            "lambda_l2": 580.9768,
-            "max_depth": 8,
-            "num_leaves": 210,
-            "num_threads": 20,
-        }
+            "num_threads": 4,
+        },
     }
     model_cfg["kwargs"].update(overrides)
     return model_cfg

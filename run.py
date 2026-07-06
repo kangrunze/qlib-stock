@@ -31,6 +31,10 @@ Usage:
   python run.py sensitivity                   # 超参数敏感性分析
   python run.py key-years                     # 关键年份独立回测
 
+  # === Phase 4: 模型能力恢复 ===
+  python run.py optuna --n-trials 100         # Optuna 超参数搜索
+  python run.py explain [--rid <id>]          # SHAP 可解释性分析
+
   # === 参数覆盖 ===
   python run.py train --handler Alpha360 --loss rank --topk 30
   python run.py full --handler Alpha360 --topk 30 --output-dir output/my_run
@@ -160,7 +164,10 @@ def parse_args():
                         choices=["mse", "rank"])
     full_parser.add_argument("--topk", type=int, default=None)
     full_parser.add_argument("--pick-topk", type=int, default=_strategy_cfg.get("top_k", 30),
-                        help="选股推荐数量")
+                             help="选股推荐数量")
+    full_parser.add_argument("--phase", type=str, default="exploration",
+                             choices=["exploration", "confirmation"],
+                             help="实验阶段: exploration=探索阶段, confirmation=确认阶段（只允许运行一次）")
     full_parser.add_argument("--experiment", type=str, default="qlib_pipeline")
     full_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("charts", "output/qlib_charts"))
 
@@ -232,6 +239,10 @@ def parse_args():
     ic_parser = subparsers.add_parser("ic-stability", help="IC 稳定性分析 (ICIR/衰减/分层)")
     ic_parser.add_argument("--config", type=str, default=None)
     ic_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("ic_stability", "output/ic_stability"))
+    ic_parser.add_argument("--phase", type=str, default="exploration",
+                             choices=["exploration", "confirmation"],
+                             help="实验阶段: exploration=探索阶段, confirmation=确认阶段（只允许运行一次）")
+    ic_parser.add_argument("--experiment", type=str, default="ic_stability")
 
     # === Phase 3: tscv ===
     tscv_parser = subparsers.add_parser("tscv", help="Purged K-Fold TSCV")
@@ -260,6 +271,8 @@ def parse_args():
     ky_parser.add_argument("--config", type=str, default=None)
     ky_parser.add_argument("--years", type=str, default=None,
                       help="逗号分隔年份 (e.g. 2020,2022,2024)")
+    ky_parser.add_argument("--rid", type=str, default=None,
+                      help="预训练模型 recorder_id（传入则使用样本外模式，在未训练年份上做纯独立回测）")
     ky_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("key_years", "output/key_years"))
 
     # === validate-picks: 验证历史推荐 ===
@@ -305,7 +318,21 @@ def cmd_train(args):
         return
 
     try:
-        logger.info("[步骤 2/3] 开始模型训练 ...")
+        # 输出训练时间段
+        segments = config.get("dataset", {}).get("segments", {})
+        train_seg = segments.get("train", [])
+        valid_seg = segments.get("valid", [])
+        test_seg = segments.get("test", [])
+        handler_cfg = config.get("data_handler", {})
+        logger.info(
+            "[步骤 2/3] 开始模型训练 — 训练集: %s~%s, 验证集: %s~%s, 测试集: %s~%s",
+            train_seg[0] if len(train_seg) > 0 else "N/A",
+            train_seg[1] if len(train_seg) > 1 else "N/A",
+            valid_seg[0] if len(valid_seg) > 0 else "N/A",
+            valid_seg[1] if len(valid_seg) > 1 else "N/A",
+            test_seg[0] if len(test_seg) > 0 else "N/A",
+            test_seg[1] if len(test_seg) > 1 else "N/A",
+        )
         model, dataset, rid = run_train(config=config, experiment_name=args.experiment)
         logger.info("[步骤 2/3] ✓ 模型训练完成")
     except Exception as e:
@@ -344,6 +371,11 @@ def cmd_backtest(args):
     logger.info("[步骤 3/4] 执行信号预测与回测 ...")
     from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
     port_config = config.get("backtest", {})
+    bt_cfg = port_config.get("backtest", {})
+    logger.info("  → 回测时间范围: %s ~ %s, 初始资金: %s",
+                bt_cfg.get("start_time", "N/A"),
+                bt_cfg.get("end_time", "N/A"),
+                bt_cfg.get("account", "N/A"))
     experiment_bt = f"{args.experiment}_backtest"
     with R.start(experiment_name=experiment_bt):
         recorder = R.get_recorder(recorder_id=args.rid, experiment_name=args.experiment)
@@ -365,14 +397,15 @@ def cmd_backtest(args):
     pred_df = recorder.load_object("pred.pkl")
     report_normal_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
     analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
-    print_summary(report_normal_df, analysis_df)
+    print_summary(report_normal_df, analysis_df, config=config)
     generate_report_charts(pred_df, report_normal_df, analysis_df, output_dir=args.output_dir)
     logger.info("[步骤 4/4] ✓ 图表已保存到: %s", args.output_dir)
 
     # 输出选股推荐
     if hasattr(args, "pick_topk") and args.pick_topk > 0:
         logger.info("[附加] 生成选股推荐 Top-%d ...", args.pick_topk)
-        print_stock_picks(pred_df, top_k=args.pick_topk, output_dir="output/picks")
+        print_stock_picks(pred_df, top_k=args.pick_topk, output_dir="output/picks",
+                         recorder_id=ba_rid, config_snapshot=config)
         logger.info("[附加] ✓ 选股推荐已保存到 output/picks")
 
     logger.info("=" * 60)
@@ -491,6 +524,18 @@ def cmd_full(args):
         logger.info("-" * 40)
         logger.info("[阶段 1/3] 模型训练")
         logger.info("-" * 40)
+        # 输出训练时间段
+        segments = config.get("dataset", {}).get("segments", {})
+        train_seg = segments.get("train", [])
+        valid_seg = segments.get("valid", [])
+        test_seg = segments.get("test", [])
+        logger.info("  → 训练集: %s~%s, 验证集: %s~%s, 测试集: %s~%s",
+                    train_seg[0] if len(train_seg) > 0 else "N/A",
+                    train_seg[1] if len(train_seg) > 1 else "N/A",
+                    valid_seg[0] if len(valid_seg) > 0 else "N/A",
+                    valid_seg[1] if len(valid_seg) > 1 else "N/A",
+                    test_seg[0] if len(test_seg) > 0 else "N/A",
+                    test_seg[1] if len(test_seg) > 1 else "N/A")
         logger.info("  → 正在构建任务配置 ...")
         task = build_task(config)
         logger.info("  ✓ 特征处理器: %s, 模型: %s, 损失函数: %s",
@@ -568,19 +613,19 @@ def cmd_full(args):
         pred_df = recorder.load_object("pred.pkl")
         report_normal_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
         analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
-        print_summary(report_normal_df, analysis_df)
+        print_summary(report_normal_df, analysis_df, config=config)
 
         logger.info("-" * 40)
         logger.info("[阶段 3/3] 生成图表与选股推荐")
         logger.info("-" * 40)
-        logger.info("  → 正在生成可视化图表 ...")
         generate_report_charts(pred_df, report_normal_df, analysis_df, output_dir=args.output_dir)
         logger.info("  ✓ 图表已保存到: %s", args.output_dir)
 
         pick_topk = getattr(args, "pick_topk", 30)
         if pick_topk > 0:
             logger.info("  → 正在生成 Top-%d 选股推荐 ...", pick_topk)
-            print_stock_picks(pred_df, top_k=pick_topk, output_dir="output/picks")
+            print_stock_picks(pred_df, top_k=pick_topk, output_dir="output/picks",
+                           recorder_id=ba_rid, config_snapshot=config)
             logger.info("  ✓ 选股推荐已保存到 output/picks")
     except Exception as e:
         logger.error("[阶段 3/3] 图表/选股生成失败: %s", e)
@@ -593,6 +638,37 @@ def cmd_full(args):
     logger.info("  训练记录: recorder_id=%s", rid)
     logger.info("  回测记录: backtest_recorder_id=%s", ba_rid)
     logger.info("=" * 60)
+
+    # ── 实验追踪与协议检查（第 2.2 节 + 第 8.2 节）──
+    if hasattr(args, "phase"):
+        from research.experiment_tracker import ExperimentTracker
+        tracker = ExperimentTracker(storage_dir="output/experiments")
+        if args.phase == "confirmation":
+            ok, msg = tracker.check_confirmation_protocol()
+            if not ok:
+                logger.error("确认阶段协议违规: %s", msg)
+            else:
+                logger.info("确认阶段协议检查通过")
+        tracker.log_experiment(
+            config=config,
+            metrics={
+                "recorder_id": rid,
+                "backtest_recorder_id": ba_rid,
+            },
+            phase=args.phase,
+            description=getattr(args, "experiment", "qlib_pipeline"),
+            recorder_id=rid,
+            test_data_range=(
+                config.get("dataset", {}).get("segments", {}).get("test", [None])[0],
+                config.get("dataset", {}).get("segments", {}).get("test", [None, None])[-1],
+            ) if "dataset" in config else None,
+        )
+        logger.info(
+            "探索阶段已累计 %d 组实验（包含本次），"
+            "最终报告时需使用校正后的显著性阈值",
+            tracker.count_exploration(),
+        )
+
     return rid, ba_rid
 
 
@@ -688,17 +764,11 @@ def cmd_drift(args):
         psi_df = compute_psi_dataframe(train_df, test_df)
 
         # 用真实模型预测计算 IC 序列，再传给概念漂移检测
-        from qlib_pipeline.ic_stability import compute_daily_rank_ic
+        from qlib_pipeline.ic_stability import get_ic_series
         from qlib.utils import init_instance_by_config
         model = init_instance_by_config(task["model"])
         model.fit(dataset)
-        test_data_full = dataset.prepare("test", col_set=["feature", "label"])
-        preds_drift = model.predict(dataset, segment="test")
-        labels_drift = test_data_full["label"]
-        ic_series_drift = compute_daily_rank_ic(
-            pd.Series(preds_drift, index=test_data_full["feature"].index),
-            labels_drift.iloc[:, 0] if labels_drift.ndim > 1 else labels_drift,
-        )
+        ic_series_drift = get_ic_series(model, dataset)
         drift_df = detect_concept_drift(ic_series_drift)
         logger.info("  → 概念漂移检测: %d 个预警", int(drift_df["drift_warning"].sum()))
 
@@ -733,24 +803,10 @@ def cmd_ic_stability(args):
     logger.info("[步骤 2/4] ✓ 模型训练完成")
 
     logger.info("[步骤 3/4] 在测试集上生成预测并计算 IC 序列 ...")
-    test_data = dataset.prepare("test", col_set=["feature", "label"])
-    preds = model.predict(dataset, segment="test")
-    logger.info("  → 测试集预测样本数: %d", len(preds))
-
-    if "label" in test_data and preds is not None:
-        labels = test_data["label"]
-        logger.info("  → 标签样本数: %d", len(labels))
-        from qlib_pipeline.ic_stability import compute_daily_rank_ic
-        ic_series = compute_daily_rank_ic(
-            pd.Series(preds, index=test_data["feature"].index),
-            labels.iloc[:, 0] if labels.ndim > 1 else labels,
-        )
-        logger.info("  → 真实逐日 RankIC 序列: %d 个交易日, IC 均值=%.4f",
-                     len(ic_series), ic_series.mean())
-    else:
-        logger.warning("  → 无法计算真实 IC 序列，使用空数据兜底")
-        ic_series = pd.Series(dtype=float)
-
+    from qlib_pipeline.ic_stability import get_ic_series
+    ic_series = get_ic_series(model, dataset)
+    logger.info("  → 真实逐日 RankIC 序列: %d 个交易日, IC 均值=%.4f",
+                 len(ic_series), ic_series.mean() if len(ic_series) > 0 else float("nan"))
     logger.info("[步骤 3/4] ✓ IC 序列计算完成")
 
     logger.info("[步骤 4/4] 生成 IC 稳定性报告 (ICIR / 衰减曲线 / 分层分析) ...")
@@ -762,6 +818,41 @@ def cmd_ic_stability(args):
     logger.info("[步骤 4/4] ✓ IC 稳定性分析完成")
     logger.info("  → ICIR: %.4f", report["icir"])
     logger.info("  → 报告已保存到: %s", args.output_dir)
+
+    # ── 实验追踪与协议检查（第 2.2 节 + 第 8.2 节）──
+    if hasattr(args, "phase"):
+        from research.experiment_tracker import ExperimentTracker
+        tracker = ExperimentTracker(storage_dir="output/experiments")
+        if args.phase == "confirmation":
+            ok, msg = tracker.check_confirmation_protocol()
+            if not ok:
+                logger.error("确认阶段协议违规: %s", msg)
+            else:
+                logger.info("确认阶段协议检查通过")
+        # 记录本次实验
+        nw_significant = report.get("nw_significant", False)
+        nw_t_stat = report.get("nw_t_stat", None)
+        tracker.log_experiment(
+            config=config,
+            metrics={
+                "ic_mean": report.get("ic_mean"),
+                "icir": report.get("icir"),
+                "nw_t_stat": nw_t_stat,
+                "nw_significant": nw_significant,
+                "n_samples": len(ic_series) if ic_series is not None else 0,
+            },
+            phase=args.phase,
+            description=getattr(args, "experiment", "ic_stability"),
+            test_data_range=(
+                config.get("dataset", {}).get("segments", {}).get("test", [None])[0],
+                config.get("dataset", {}).get("segments", {}).get("test", [None, None])[-1],
+            ) if "dataset" in config else None,
+        )
+        logger.info(
+            "探索阶段已累计 %d 组实验（包含本次），"
+            "最终报告时需使用校正后的显著性阈值",
+            tracker.count_exploration(),
+        )
 
 
 # ===== Phase 3: 鲁棒性深化 =====
@@ -815,6 +906,9 @@ def cmd_regime(args):
             # 构造 price Series
             dates = all_dates[start_idx:start_idx + len(close_values)]
             price = pd.Series(close_values, index=pd.to_datetime(dates)).dropna()
+
+            # ── 层级校验 ──
+            _validate_benchmark_price(price, benchmark_code, config)
         else:
             logger.error("基准文件不存在: %s", benchmark_path)
             return
@@ -832,14 +926,8 @@ def cmd_regime(args):
         dataset = init_instance_by_config(task["dataset"])
         model = init_instance_by_config(task["model"])
         model.fit(dataset)
-        test_data = dataset.prepare("test", col_set=["feature", "label"])
-        preds = model.predict(dataset, segment="test")
-        labels = test_data["label"]
-        from qlib_pipeline.ic_stability import compute_daily_rank_ic
-        ic_series = compute_daily_rank_ic(
-            pd.Series(preds, index=test_data["feature"].index),
-            labels.iloc[:, 0] if labels.ndim > 1 else labels,
-        )
+        from qlib_pipeline.ic_stability import get_ic_series
+        ic_series = get_ic_series(model, dataset)
         logger.info("  → 真实 RankIC 序列: %d 个交易日, IC 均值=%.4f", len(ic_series), ic_series.mean())
 
         from qlib_pipeline.regime import regime_analysis
@@ -870,7 +958,7 @@ def cmd_sensitivity(args):
 
 
 def cmd_key_years(args):
-    """关键年份独立回测"""
+    """关键年份独立回测（支持样本外模式）"""
     logger.info("[命令] key-years — 关键年份独立回测")
     config = load_workflow_config(args.config)
     _log_config_summary(config)
@@ -880,10 +968,16 @@ def cmd_key_years(args):
         logger.info("[参数] 指定年份: %s", ", ".join(years))
     else:
         logger.info("[参数] 使用默认关键年份列表")
+
+    if args.rid:
+        logger.info("[参数] 样本外模式: 使用预训练模型 %s", args.rid)
+        logger.info("  → 模型在非关键年份训练，在关键年份做纯测试（未在训练中使用的市场阶段）")
+
     logger.info("[步骤 1/1] 开始关键年份独立回测 ...")
 
     from qlib_pipeline.regime import key_year_backtest
-    df = key_year_backtest(config, years=years, output_dir=args.output_dir)
+    df = key_year_backtest(config, years=years, output_dir=args.output_dir,
+                           pretrained_rid=args.rid)
     logger.info("[步骤 1/1] ✓ 关键年份回测完成: %d 个年份", len(df))
     logger.info("  → 结果已保存到: %s", args.output_dir)
 
@@ -896,6 +990,65 @@ def cmd_update(args):
     skip_bin = args.skip_bin
     workers = args.workers if args.workers else _ds_cfg.get("max_workers", 10)
     daily_update(days=days, skip_bin=skip_bin, workers=workers)
+
+
+def _normalize_to_qlib_code(stock_code: str) -> str:
+    """将纯数字股票代码还原为 Qlib 格式（SH/SZ 前缀）。
+
+    print_stock_picks() 保存 CSV 时会去掉 SH/SZ 前缀以方便人工阅读，
+    但 Qlib D.features() 查询需要完整格式：SH600000 / SZ000001。
+    """
+    code = str(stock_code).strip().zfill(6)
+    if code.startswith("6"):
+        return f"SH{code}"
+    else:
+        return f"SZ{code}"
+
+
+def _validate_benchmark_price(price: pd.Series, benchmark_code: str, config: dict) -> None:
+    """校验 cmd_regime 从 bin 文件直读出的基准价格数据。
+
+    检查项：
+      1. 价格序列非空且长度合理
+      2. 首尾日期在 data_handler 配置范围内
+      3. 无连续多日价格不变（停牌特征）
+    """
+    if len(price) == 0:
+        raise ValueError(f"基准 {benchmark_code} 价格序列为空，bin 文件可能损坏")
+
+    # 检查 1: 日期范围是否在配置范围内
+    dh = config.get("data_handler", {})
+    dh_start = dh.get("start_time")
+    dh_end = dh.get("end_time")
+    if dh_start and price.index.min() < pd.Timestamp(dh_start):
+        logger.warning(
+            "基准 %s 价格起始日期 %s 早于 data_handler.start_time %s，可能存在日历错位",
+            benchmark_code, price.index.min().strftime("%Y-%m-%d"), dh_start)
+    if dh_end and price.index.max() > pd.Timestamp(dh_end):
+        logger.warning(
+            "基准 %s 价格结束日期 %s 晚于 data_handler.end_time %s，可能存在日历错位",
+            benchmark_code, price.index.max().strftime("%Y-%m-%d"), dh_end)
+
+    # 检查 2: 连续价格不变（停牌特征）
+    price_diff = price.diff().fillna(0)
+    # 连续 5 个及以上交易日价格不变 → 疑似停牌
+    consecutive_flat = (price_diff == 0).astype(int).groupby(
+        (price_diff != 0).astype(int).cumsum()
+    ).transform("sum")
+    max_flat = int(consecutive_flat.max())
+    if max_flat >= 5:
+        flat_dates = price.index[consecutive_flat >= 5]
+        logger.warning(
+            "基准 %s 存在连续 %d 天价格不变（疑似停牌），涉及日期范围: %s ~ %s",
+            benchmark_code, max_flat,
+            flat_dates.min().strftime("%Y-%m-%d") if len(flat_dates) > 0 else "N/A",
+            flat_dates.max().strftime("%Y-%m-%d") if len(flat_dates) > 0 else "N/A")
+
+    logger.info(
+        "  → 基准 %s 校验通过: %d 个数据点, %s ~ %s",
+        benchmark_code, len(price),
+        price.index.min().strftime("%Y-%m-%d"),
+        price.index.max().strftime("%Y-%m-%d"))
 
 
 def cmd_validate_picks(args):
@@ -945,10 +1098,11 @@ def cmd_validate_picks(args):
 
     for _, rec in recs_df.iterrows():
         try:
-            stock = rec["stock_code"]
+            raw_code = rec["stock_code"]
+            qlib_code = _normalize_to_qlib_code(raw_code)  # 纯数字 → SH/SZ 前缀
             date = rec["date"]
             price_data = D.features(
-                [stock], ["$close"],
+                [qlib_code], ["$close"],
                 start_time=date,
                 end_time=pd.Timestamp(date) + pd.Timedelta(days=lookback + 30)
             )
@@ -959,7 +1113,7 @@ def cmd_validate_picks(args):
             if base_price is None:
                 continue
 
-            result = {"date": date, "stock_code": stock, "rank": rec.get("rank", 0), "score": rec.get("score", 0.0)}
+            result = {"date": date, "stock_code": raw_code, "rank": rec.get("rank", 0), "score": rec.get("score", 0.0)}
             for h in horizons:
                 if h < len(price_data):
                     future_price = price_data.iloc[h].values[0]
@@ -1003,15 +1157,83 @@ def cmd_pick(args):
     pred_df = recorder.load_object("pred.pkl")
     report_normal_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
     analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
-    logger.info("[步骤 1/2] ✓ 加载完成, 预测记录数: %d", len(pred_df))
+    # 输出预测日期范围
+    if not pred_df.empty and "datetime" in pred_df.index.names:
+        pred_dates = pred_df.index.get_level_values("datetime")
+        logger.info("[步骤 1/2] ✓ 加载完成, 预测记录数: %d, 预测日期范围: %s ~ %s",
+                    len(pred_df),
+                    str(pred_dates.min())[:10] if len(pred_dates) > 0 else "N/A",
+                    str(pred_dates.max())[:10] if len(pred_dates) > 0 else "N/A")
+    else:
+        logger.info("[步骤 1/2] ✓ 加载完成, 预测记录数: %d", len(pred_df))
 
     logger.info("[步骤 2/2] 输出回测摘要并生成 Top-%d 选股推荐 ...", args.topk)
-    print_summary(report_normal_df, analysis_df)
+    print_summary(report_normal_df, analysis_df, config=config)
     if args.date:
         logger.info("  → 指定日期: %s", args.date)
-    picks = print_stock_picks(pred_df, top_k=args.topk, date=args.date, output_dir=args.output_dir)
+    picks = print_stock_picks(pred_df, top_k=args.topk, date=args.date, output_dir=args.output_dir,
+                           recorder_id=args.rid, config_snapshot=config)
     logger.info("[步骤 2/2] ✓ 选股推荐已保存到: %s", args.output_dir)
     return picks
+
+
+def cmd_optuna(args):
+    """Optuna 超参数搜索（Phase 4 模型能力恢复）"""
+    logger.info("[命令] optuna — 超参数搜索 (n_trials=%d, timeout=%ds)", args.n_trials, args.timeout)
+    config = load_workflow_config(args.config)
+
+    from tuning.optuna_search import run_optuna_search
+    result = run_optuna_search(
+        config=config,
+        n_trials=args.n_trials,
+        timeout=args.timeout,
+        study_name=getattr(args, "study_name", "lgb_optimization"),
+        output_dir=args.output_dir,
+        phase=getattr(args, "phase", "exploration"),
+    )
+
+    if "error" in result:
+        logger.error("Optuna 搜索失败: %s", result["error"])
+    else:
+        logger.info("Optuna 搜索完成, 最佳 IC=%.6f, 结果已保存到: %s",
+                    result["best_ic"], result["output_dir"])
+
+
+def cmd_explain(args):
+    """SHAP 模型可解释性分析（Phase 4 模型能力恢复）"""
+    logger.info("[命令] explain — SHAP 可解释性分析")
+    config = load_workflow_config(args.config)
+    init_qlib_env(config)
+
+    from research.explain import generate_shap_report
+    from qlib_pipeline.model import Model
+    from qlib_pipeline.dataset import Dataset
+
+    # 构建数据集
+    dataset = Dataset(config).build()
+
+    # 加载已训练模型（优先从 MLflow 加载，否则重新训练）
+    experiment = getattr(args, "experiment", "qlib_pipeline")
+    if getattr(args, "rid", None):
+        from qlib.workflow import R
+        recorder = R.get_recorder(recorder_id=args.rid, experiment_name=experiment)
+        model = recorder.load_object("model.pkl")
+    else:
+        model = Model(config).build()
+        model.fit(dataset)
+
+    report = generate_shap_report(
+        model=model,
+        dataset=dataset,
+        output_dir=args.output_dir,
+        segment=getattr(args, "segment", "test"),
+        max_samples=getattr(args, "max_samples", 2000),
+    )
+
+    if "error" in report:
+        logger.error("SHAP 分析失败: %s", report["error"])
+    else:
+        logger.info("SHAP 分析完成, 前10特征: %s", ", ".join(report.get("top_10_features", [])[:5]))
 
 
 def main():
@@ -1025,6 +1247,7 @@ def main():
         "tscv": cmd_tscv, "regime": cmd_regime,
         "sensitivity": cmd_sensitivity, "key-years": cmd_key_years,
         "validate-picks": cmd_validate_picks,
+        "optuna": cmd_optuna, "explain": cmd_explain,  # Phase 4 模型能力恢复
     }
     fn = cmd_map.get(args.command)
     if fn:

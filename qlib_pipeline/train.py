@@ -9,7 +9,7 @@ Qlib Training Pipeline - train.py
   4. Save model + metadata
   5. (Optional) Run prediction and backtest
 
-模型定义统一在 model/ 目录，本模块仅负责 Workflow 编排。
+模型超参数配置在 workflow_config.yaml 的 qlib_lgb 段，本模块仅负责 Workflow 编排。
 """
 
 import logging
@@ -42,7 +42,7 @@ def build_task(config: dict) -> dict:
     Build complete Qlib task config from workflow config.
 
     从统一配置构建 Qlib task dict（包含 model + dataset），
-    模型定义从 model/ 包导入，配置从 workflow_config.yaml 读取。
+    模型超参数从 workflow_config.yaml 的 qlib_lgb 段读取。
 
     Args:
         config: workflow config dict

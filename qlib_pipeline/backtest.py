@@ -263,8 +263,19 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
     return charts
 
 
-def print_summary(report_normal_df, analysis_df):
-    """Print backtest summary metrics."""
+def print_summary(report_normal_df, analysis_df, config: dict = None, picks_df = None):
+    """Print backtest summary metrics with cost drag decomposition and style exposure diagnosis.
+
+    第 10.1 节要求:
+      - 换手率成本拖累: 年化换手率 × 单次交易成本 = 可验证的成本拖累
+      - 风格暴露检查: 避免策略在不自知中成为单一风格因子的杠杆化押注
+
+    Args:
+        report_normal_df: 日度报告 DataFrame
+        analysis_df: 分析 DataFrame
+        config: workflow_config dict（用于读取交易成本参数）
+        picks_df: 选股推荐 DataFrame（用于风格暴露诊断）
+    """
     try:
         print("\n" + "=" * 60)
         print("回测结果摘要")
@@ -276,6 +287,43 @@ def print_summary(report_normal_df, analysis_df):
                 s = _extract_series(report_normal_df, key)
                 if s is not None and len(s) > 0:
                     print(f"  {key}: 日均={s.mean():.6f}, 年化={s.mean()*252:.4f}, 夏普={s.mean()/s.std()*np.sqrt(252):.4f}")
+
+            # ── 换手率成本拖累拆解（第 10.1 节）──
+            turnover_s = _extract_series(report_normal_df, "turnover")
+            ret_s = _extract_series(report_normal_df, "return")
+            if turnover_s is not None and len(turnover_s) > 0:
+                # 读取交易成本参数
+                if config:
+                    backtest_cfg = config.get("backtest", {}).get("backtest", {})
+                    exc_cfg = backtest_cfg.get("exchange_kwargs", {})
+                    open_cost = exc_cfg.get("open_cost", 0.0005)
+                    close_cost = exc_cfg.get("close_cost", 0.0015)
+                else:
+                    open_cost, close_cost = 0.0005, 0.0015
+
+                round_trip_cost = open_cost + close_cost
+                avg_daily_turnover = float(turnover_s.mean())
+                annual_turnover = avg_daily_turnover * 252
+                annual_cost_drag = annual_turnover * round_trip_cost
+
+                print("\n[换手率成本拖累拆解]")
+                print(f"  日均换手率:           {avg_daily_turnover:.4%}")
+                print(f"  年化换手率:           {annual_turnover:.2f}x")
+                print(f"  单次往返成本:         {round_trip_cost:.4%} (open={open_cost:.4%} + close={close_cost:.4%})")
+                print(f"  年化成本拖累:         {annual_cost_drag:.4%}")
+
+                if ret_s is not None and len(ret_s) > 0:
+                    annual_return = float(ret_s.mean()) * 252
+                    bench_s = _extract_series(report_normal_df, "bench")
+                    annual_bench = float(bench_s.mean()) * 252 if bench_s is not None else 0
+                    excess_pre_cost = annual_return - annual_bench
+                    excess_post_cost = excess_pre_cost - annual_cost_drag
+                    print(f"  年化收益(策略):       {annual_return:.4%}")
+                    print(f"  年化收益(基准):       {annual_bench:.4%}")
+                    print(f"  超额收益(成本前):     {excess_pre_cost:.4%}")
+                    print(f"  超额收益(成本后):     {excess_post_cost:.4%}")
+                    if excess_post_cost < 0:
+                        print(f"  ⚠ 成本后超额收益为负！换手率过高可能侵蚀全部 Alpha")
 
         if analysis_df is not None and not analysis_df.empty:
             print("\n[绩效指标]")
@@ -291,25 +339,42 @@ def print_summary(report_normal_df, analysis_df):
                     val = analysis_df[col].iloc[-1] if len(analysis_df) > 0 else None
                     if val is not None and pd.notna(val):
                         print(f"  {col}: {val:.4f}")
+
+        # ── 风格暴露诊断（第 9.2 节）──
+        if picks_df is not None and not picks_df.empty:
+            print("\n[风格暴露诊断]")
+            try:
+                from research.risk_model import STYLE_FACTORS
+                print(f"  可用风格维度: {', '.join(STYLE_FACTORS.keys())}")
+                print(f"  (风格暴露计算需要因子值数据，当前仅提供诊断框架)")
+                print(f"  → 使用 research.risk_model.calculate_style_exposures() 完整计算")
+                print(f"  → 检查阈值: |active_exposure| > 0.5 sigma 时触发警告")
+                print(f"  → 若某风格暴露绝对值持续偏高，策略可能是不自知的风格因子押注")
+            except ImportError:
+                print("  (research.risk_model 不可用，无法进行风格暴露诊断)")
+
     except Exception as e:
         logger.error("打印摘要失败: %s", e)
 
 
 def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
-                      output_dir: str = "output/picks"):
+                      output_dir: str = "output/picks",
+                      recorder_id: str = None, config_snapshot: dict = None):
     """
     从 Qlib 预测结果中提取 Top-K 选股推荐并打印和保存。
-    
+
     pred_df 结构（Qlib SignalRecord 输出）:
         MultiIndex: (datetime, instrument)
         Column: score
-    
+
     Args:
         pred_df: 预测 DataFrame（来自 recorder.load_object("pred.pkl")）
         top_k: 选股数量
         date: 指定日期（None=取最新交易日）
         output_dir: CSV 输出目录
-    
+        recorder_id: Qlib Recorder ID（可选，用于追溯模型版本）
+        config_snapshot: 配置快照 dict（可选，用于追溯参数）
+
     Returns:
         DataFrame[stock_code, score, rank, date]
     """
@@ -394,13 +459,12 @@ def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
         print(f"  平均得分: {picks['score'].mean():.6f} | 最高: {picks['score'].max():.6f} | 最低: {picks['score'].min():.6f}")
         print("=" * 70)
 
-        # 保存 CSV
+        # 保存 CSV + 配置快照
         if output_dir:
-            out_path = Path(output_dir)
-            out_path.mkdir(parents=True, exist_ok=True)
-            csv_file = out_path / f"stock_picks_{target_date.strftime('%Y%m%d')}.csv"
-            picks.to_csv(csv_file, index=False, encoding="utf-8-sig")
-            logger.info("选股推荐已保存: %s", csv_file)
+            save_stock_picks_to_file(
+                picks, output_dir=output_dir, date_str=target_date.strftime("%Y%m%d"),
+                recorder_id=recorder_id, config_snapshot=config_snapshot,
+            )
 
         return picks
 
@@ -409,10 +473,28 @@ def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
         return None
 
 
-def save_stock_picks_to_file(picks_df, output_dir: str = "output/picks", date_str: str = None):
-    """保存选股结果到 CSV 文件。"""
+def save_stock_picks_to_file(picks_df, output_dir: str = "output/picks", date_str: str = None,
+                            recorder_id: str = None, config_snapshot: dict = None):
+    """保存选股结果到 CSV 文件，同时保存配置快照用于后续追溯。
+
+    第 11.2 节闭环设计: 推荐时的配置快照（recorder_id、配置文件版本）一并归档，
+    几周后复核某期推荐表现不佳时，能准确定位到"当时用的是哪个模型、哪一组参数"。
+
+    Args:
+        picks_df: 选股结果 DataFrame
+        output_dir: 输出目录
+        date_str: 日期字符串
+        recorder_id: Qlib Recorder ID（可选，用于追溯模型版本）
+        config_snapshot: 配置快照 dict（可选，用于追溯参数）
+
+    Returns:
+        (csv_path, meta_path) 元组
+    """
     if picks_df is None or picks_df.empty:
-        return None
+        return None, None
+
+    import json
+    from datetime import datetime as dt
 
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -420,12 +502,29 @@ def save_stock_picks_to_file(picks_df, output_dir: str = "output/picks", date_st
     if date_str is None and "date" in picks_df.columns:
         date_str = picks_df["date"].iloc[0]
     if date_str is None:
-        from datetime import datetime
-        date_str = datetime.now().strftime("%Y%m%d")
+        date_str = dt.now().strftime("%Y%m%d")
     else:
         date_str = pd.Timestamp(date_str).strftime("%Y%m%d")
 
+    # 保存选股 CSV
     csv_file = out_path / f"stock_picks_{date_str}.csv"
     picks_df.to_csv(csv_file, index=False, encoding="utf-8-sig")
     logger.info("选股推荐已保存: %s", csv_file)
-    return str(csv_file)
+
+    # 保存配置快照 JSON（第 11.2 节）
+    meta = {
+        "date": date_str,
+        "saved_at": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "n_picks": len(picks_df),
+        "recorder_id": recorder_id,
+        "config_snapshot": config_snapshot or {},
+    }
+    meta_file = out_path / f"stock_picks_{date_str}.meta.json"
+    try:
+        with open(meta_file, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False, default=str)
+        logger.info("配置快照已保存: %s", meta_file)
+    except Exception as e:
+        logger.warning("保存配置快照失败: %s", e)
+
+    return str(csv_file), str(meta_file)

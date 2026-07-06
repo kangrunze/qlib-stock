@@ -44,23 +44,13 @@ def _init_qlib_env(config: dict):
 
 
 def _single_train(config: dict, param_overrides: dict) -> Optional[float]:
-    """Train a single model with given params, return final valid l2."""
-    import os
-    os.environ.setdefault("NUMEXPR_MAX_THREADS", "1")
+    """Train a single model with given params, return final valid l2.
 
+    Qlib 环境已由调用方（hyperparameter_sensitivity）通过 _init_qlib_env 初始化，
+    本函数不再重复初始化，避免多次 init 导致资源泄漏。
+    """
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
-    from qlib.utils import flatten_dict
-
-    import qlib
-    from qlib.constant import REG_CN
-    provider_uri = config.get("qlib", {}).get("provider_uri",
-                     "D:/trae/qlib_bin")
-    qlib.init(provider_uri=provider_uri, region=REG_CN)
-
-    from qlib.config import C
-    C.joblib_backend = "threading"
-    C.dataset_process_n_worker = 1
 
     handler = config.get("dataset", {}).get("handler", "Alpha158")
 

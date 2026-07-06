@@ -3,8 +3,13 @@
 Purged K-Fold Time Series Cross Validation — tscv.py
 
 Phase 3 鲁棒性深化。
-实现带 Purging 和 Embargo 的时序交叉验证，
+实现带 Purging 和 Embargo 的时序交叉验证（真双向净化），
 基于 Marc Lopez de Prado《Advances in Financial Machine Learning》。
+
+与简单前向验证的区别：
+  前向验证: train = 所有 test 之前的数据（单向）
+  真 Purged K-Fold: train 可以包含 test 之后的数据，只要标签窗口不重叠
+  这能显着提升对稀缺样本的利用效率，特别适合中长周期策略。
 
 Usage:
     from qlib_pipeline.tscv import PurgedKFoldCV, run_tscv
@@ -32,72 +37,92 @@ def generate_purged_kfold_splits(
     n_splits: int = 5,
     purge_days: int = 5,
     embargo_days: int = 0,
+    label_horizon: int = 20,
 ) -> Generator[Tuple[List[str], List[str]], None, None]:
     """
-    Generate Purged K-Fold splits for time series.
+    Generate Purged K-Fold splits for time series（真双向净化）。
 
     Key concepts:
-      - Purging: remove training samples that overlap with test labels
-      - Embargo: remove training samples immediately before test set
+      - Purging: 训练集中，标签计算窗口与测试集有重叠的样本全部排除
+      - Embargo: 测试集结束后留一段禁运期，不用于紧邻的下一折训练
+      - 双向: 允许使用测试集之后的数据训练（只要满足净化条件），
+        这是 K-Fold 区别于纯前向验证的关键
 
     Args:
         dates: sorted list of date strings
         n_splits: number of folds
-        purge_days: days to purge from train end (to avoid label overlap)
-        embargo_days: days to embargo between train and test
+        purge_days: 标签窗口重叠的净化天数（建议设为 label_horizon）
+        embargo_days: 测试集后的禁运天数
+        label_horizon: 标签的前瞻天数，用于计算标签窗口重叠
 
     Yields:
         (train_dates, test_dates) for each fold
     """
     n = len(dates)
-
-    # Convert to datetime for arithmetic
     date_dt = pd.to_datetime(dates)
     purge_td = pd.Timedelta(days=purge_days)
     embargo_td = pd.Timedelta(days=embargo_days)
+    label_td = pd.Timedelta(days=label_horizon)
 
     for i in range(n_splits):
-        # Test set: i-th block
+        # 测试集: i-th block
         test_start_idx = int(n * i / n_splits)
         test_end_idx = int(n * (i + 1) / n_splits) - 1
+        test_start_date = date_dt[test_start_idx]
         test_end_date = date_dt[test_end_idx]
 
-        # Train set: all data before test_start, minus purge and embargo
-        train_end_date = date_dt[test_start_idx] - purge_td - embargo_td
-        train_mask = date_dt <= train_end_date
-        test_mask = (date_dt.index >= test_start_idx) & (date_dt.index <= test_end_idx)
+        # 测试窗口（含 purge 和 embargo 扩展）
+        test_window_start = test_start_date - purge_td
+        test_window_end = test_end_date + embargo_td
 
-        train_dates = dates[:train_mask.sum()] if train_mask.sum() > 0 else []
+        # 训练集: 所有标签窗口不与测试窗口重叠的样本
+        # 训练样本在日期 d 的标签覆盖 [d, d + label_horizon]
+        # 重叠条件: d + label_horizon >= test_window_start AND d <= test_window_end
+        train_dates = []
+        for j, d in enumerate(date_dt):
+            if test_start_idx <= j <= test_end_idx:
+                continue  # 跳过测试集本身
+            label_end = d + label_td
+            # 标签窗口与测试窗口重叠？
+            if label_end < test_window_start or d > test_window_end:
+                train_dates.append(dates[j])
+
         test_dates = [dates[i] for i in range(test_start_idx, test_end_idx + 1)]
 
         if len(train_dates) > 0 and len(test_dates) > 0:
             yield train_dates, test_dates
         else:
-            logger.warning("Fold %d: insufficient data (train=%d, test=%d)", i, len(train_dates), len(test_dates))
+            logger.warning(
+                "Fold %d: 数据不足 (train=%d, test=%d), 跳过",
+                i, len(train_dates), len(test_dates),
+            )
 
 
 class PurgedKFoldCV:
     """
-    Purged K-Fold Time Series Cross Validation.
+    Purged K-Fold Time Series Cross Validation（真双向净化）。
 
-    Implements time-aware cross-validation with purging and embargo,
-    then evaluates model stability across folds.
+    Implements time-aware cross-validation with purging and embargo
+    based on Marc Lopez de Prado's methodology.
 
     Args:
         config: workflow config dict
         n_splits: number of folds
-        purge_days: label overlap purge window
-        embargo_days: embargo gap between train and test
+        purge_days: 标签窗口重叠净化天数（建议 = label_horizon）
+        embargo_days: 测试集后禁运天数
+        label_horizon: 标签前瞻天数，用于计算标签窗口重叠
         min_train_days: minimum training days required
     """
 
     def __init__(self, config: dict, n_splits: int = 5,
                  purge_days: int = 5, embargo_days: int = 0,
+                 label_horizon: int = 20,
                  min_train_days: int = 252):
         self.config = config
         self.n_splits = n_splits
         self.purge_days = purge_days
         self.embargo_days = embargo_days
+        self.label_horizon = label_horizon
         self.min_train_days = min_train_days
         self.fold_results: List[Dict] = []
 
@@ -139,7 +164,8 @@ class PurgedKFoldCV:
 
         calendar = self._load_calendar()
         splits = list(generate_purged_kfold_splits(
-            calendar, self.n_splits, self.purge_days, self.embargo_days
+            calendar, self.n_splits, self.purge_days, self.embargo_days,
+            label_horizon=self.label_horizon
         ))
 
         self._init_qlib()
@@ -252,10 +278,11 @@ class PurgedKFoldCV:
 
 
 def run_tscv(config: dict, n_splits: int = 5, purge_days: int = 5,
-             embargo_days: int = 0, output_dir: str = "output/tscv") -> pd.DataFrame:
+             embargo_days: int = 0, label_horizon: int = 20,
+             output_dir: str = "output/tscv") -> pd.DataFrame:
     """Convenience wrapper for TSCV."""
     cv = PurgedKFoldCV(config, n_splits=n_splits, purge_days=purge_days,
-                       embargo_days=embargo_days)
+                       embargo_days=embargo_days, label_horizon=label_horizon)
     df = cv.run()
 
     output_path = Path(output_dir)

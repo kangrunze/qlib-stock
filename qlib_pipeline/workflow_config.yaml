@@ -69,8 +69,9 @@
 # 作用: 告诉 Qlib 在哪里找到 bin 格式数据，以及市场区域
 # =============================================================================
 qlib:
+  # ⚠ provider_uri 必须与 config/settings.yaml:data_source.qlib_dir 保持一致
   # provider_uri: "d:/project/qlib-stock/qlib_data/cn_data"  # Qlib bin 数据目录
-  provider_uri: "D:/trae/qlib_bin"
+  provider_uri: "D:/download/qlib_bin"
   region: "cn"                    # 市场区域: cn=A股沪深, us=美股
 
 # =============================================================================
@@ -90,7 +91,9 @@ data_source:
 
   csv_dir: "D:/data"                                        # CSV 原始数据目录
   parquet_dir: "d:/project/qlib-stock/stock-ai/data/daily"  # Parquet 数据目录
-  qlib_dir: "D:/trae/qlib_bin"       # Qlib bin 数据目录
+  # qlib_dir: "D:/trae/qlib_bin"  ← 已删除重复配置
+  # 本文件中 qlib.provider_uri 与 config/settings.yaml:data_source.qlib_dir
+  # 应该保持一致；修改数据目录建议优先改 config/settings.yaml
 
   start_date: "2005-01-01"       # 最早可用数据日期（下载/转换时的起始点）
   max_workers: 10                # 并发下载线程数（AKShare 数据源）
@@ -163,7 +166,7 @@ dataset:
   segments:
     train: ["2020-01-01", "2024-06-30"]    # 训练集: 约 4.5 年
     valid: ["2024-07-01", "2025-06-30"]    # 验证集: 约 1 年
-    test:  ["2025-07-01", "2026-06-25"]    # 测试集: 约 1 年
+    test:  ["2025-07-01", "2026-07-05"]    # 测试集: 约 1 年
 
 # =============================================================================
 # 6. Qlib 原生 LGB 配置 — run.py 实际使用的模型 ★
@@ -185,7 +188,7 @@ qlib_lgb:
   module_path: "qlib.contrib.model.gbdt"   # Qlib 模块路径
   kwargs:
     loss: "mse"                # ★ 损失函数: mse(回归) | rank(Lambdarank, 选股推荐)
-    colsample_bytree: 0.8879   # 特征采样比例（初始值来自 Qlib 官方 Alpha158+LightGBM 基准示例配置，尚未针对本项目数据重新调优，计划在阶段 C 用 model/optuna_tuner.py 重新搜索）
+    colsample_bytree: 0.8879   # 特征采样比例（初始值来自 Qlib 官方 Alpha158+LightGBM 基准示例配置，尚未针对本项目数据重新调优，可用 tuning/optuna_search.py 重新搜索）
     learning_rate: 0.0421      # 学习率（同上）
     subsample: 0.8789          # 样本采样比例（同上）
     lambda_l1: 205.6999        # L1 正则化系数（同上）
@@ -224,9 +227,9 @@ backtest:
   # --- 回测交易参数（PortAnaRecord 嵌套结构） ---
   backtest:
     start_time: "2025-07-01"               # ★ 回测起始日期（通常 = test 段起始）
-    end_time: "2026-06-25"                 # ★ 回测截止日期（须在实际最后交易日之前）
+    end_time: "2026-07-05"                 # ★ 回测截止日期（须在实际最后交易日之前）
     account: 100000000                     # 初始资金（元），1 亿
-    benchmark: "SH600000"                  # 基准股票代码（⚠ 当前用浦发银行个股代替沪深300指数，超额收益指标不可信，需先补齐指数数据后改为 SH000300）
+    benchmark: "SH000300"                  # 基准指数代码（沪深300指数，Phase C 修复后使用真实指数）
     exchange_kwargs:
       freq: "day"                          # 交易频率
       limit_threshold: 0.095               # 涨跌停阈值（9.5%，A 股涨跌停 ±10%）
@@ -264,4 +267,28 @@ labels:
     - name: "ret_60d"
       horizon: 60                # 未来 60 个交易日的收益率
       description: "未来60日收益率（适合季度调仓）"
+    - name: "ret_120d"
+      horizon: 120               # 未来 120 个交易日的收益率
+      description: "未来120日收益率（适合半年调仓，Phase B 新增）"
+    - name: "alpha_20d"
+      horizon: 20
+      description: "相对基准超额收益（20日，Phase B 新增，依赖 Phase C 基准修复）"
+    - name: "alpha_60d"
+      horizon: 60
+      description: "相对基准超额收益（60日，Phase B 新增）"
+    - name: "alpha_120d"
+      horizon: 120
+      description: "相对基准超额收益（120日，Phase B 新增）"
+    - name: "xs_ret_20d"
+      horizon: 20
+      description: "相对全池中位数收益（20日，训练口径候选，Phase B 新增）"
+    - name: "xs_ret_60d"
+      horizon: 60
+      description: "相对全池中位数收益（60日，训练口径候选，Phase B 新增）"
+    - name: "xs_ret_120d"
+      horizon: 120
+      description: "相对全池中位数收益（120日，训练口径候选，Phase B 新增）"
+    - name: "up_down_60d"
+      horizon: 60
+      description: "方向判断标签（60日，诊断用途，Phase B 新增，不作为独立训练目标）"
   primary: "ret_20d"             # ★ 主 Label（handler 默认使用的预测目标）

@@ -58,7 +58,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 | 路径 | 用途 | 配置项 |
 |------|------|--------|
 | `D:/data/` | CSV 原始数据（AKShare 下载） | `data_source.csv_dir` |
-| `D:/trae/qlib_bin/` | Qlib bin 格式数据 | `data_source.qlib_dir` |
+| `D:/download/qlib_bin/` | Qlib bin 格式数据 | `data_source.qlib_dir` |
 
 ### 2.2 下载数据
 
@@ -197,6 +197,10 @@ python run.py tscv --n-splits 5             # Purged K-Fold 时序交叉验证
 python run.py regime                        # 市场阶段稳定性分析
 python run.py sensitivity                   # 超参数敏感性分析
 python run.py key-years --years 2020,2022   # 关键年份独立回测
+
+# === Phase 4: 模型能力恢复 ===
+python run.py optuna --n-trials 100         # Optuna 超参数搜索
+python run.py explain [--rid <id>]          # SHAP 可解释性分析
 ```
 
 | 命令 | 参数 | 说明 |
@@ -205,6 +209,8 @@ python run.py key-years --years 2020,2022   # 关键年份独立回测
 | `regime` | `--output-dir` | 牛市/熊市/震荡市分阶段 IC 分析 |
 | `sensitivity` | `--param` 参数名 `--values` 逗号分隔值 | 单参数或全参数扫描 |
 | `key-years` | `--years` 逗号分隔年份 | 指定年份独立回测 |
+| `optuna` | `--n-trials` 试算次数 / `--timeout` 超时秒数 | 贝叶斯超参数搜索 |
+| `explain` | `--rid` 模型记录ID / `--max-samples` | SHAP 特征重要性分析 |
 
 ### 3.6 选股验证
 
@@ -329,4 +335,6 @@ python run.py regime
 python run.py sensitivity
 python run.py key-years
 python run.py validate-picks
+python run.py optuna --n-trials 100
+python run.py explain
 ```

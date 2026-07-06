@@ -51,43 +51,98 @@ def compute_daily_rank_ic(pred: pd.Series, label: pd.Series) -> pd.Series:
     return daily_ic.dropna()
 
 
-def evaluate_fold(model, dataset) -> dict:
-    """在测试集上评估模型表现，返回 IC 相关指标。
+def get_ic_series(model, dataset) -> pd.Series:
+    """在测试集上预测并计算逐日 RankIC 序列。
 
-    用于 rolling.py / tscv.py 每折训练后的评估环节。
+    本函数封装了"预测 → 计算 IC"这一核心逻辑，供 run.py 中
+    cmd_drift / cmd_ic_stability / cmd_regime 以及 evaluate_fold() 统一调用，
+    避免多处重复实现导致不一致。
 
     Args:
         model: 已训练好的 Qlib 模型
         dataset: Qlib DatasetH 实例
 
     Returns:
-        dict with ic_mean, ic_std, icir, ic_positive_ratio
+        pd.Series，index 为日期，值为当日 RankIC（Spearman）
+    """
+    test_data = dataset.prepare("test", col_set=["feature", "label"])
+    preds = model.predict(dataset, segment="test")
+    labels = test_data["label"]
+    ic_series = compute_daily_rank_ic(
+        pd.Series(preds, index=test_data["feature"].index),
+        labels.iloc[:, 0] if labels.ndim > 1 else labels,
+    )
+    return ic_series
+
+
+def evaluate_fold(model, dataset, label_horizon: int = 20) -> dict:
+    """在测试集上评估模型表现，返回 IC 汇总指标 + Newey-West 显著性检验。
+
+    内部调用 get_ic_series() 获取逐日 IC 序列后计算均值/标准差/ICIR，
+    并通过 research.significance.newey_west_test() 进行 Newey-West 调整后的
+    显著性检验（处理标签重叠导致的自相关）。
+
+    用于 rolling.py / tscv.py 每折训练后的评估环节。
+
+    Args:
+        model: 已训练好的 Qlib 模型
+        dataset: Qlib DatasetH 实例
+        label_horizon: 标签前瞻天数，用于 Newey-West 滞后阶数
+
+    Returns:
+        dict with ic_mean, ic_std, icir, ic_positive_ratio,
+             nw_t_stat, nw_p_value, nw_significant, n_samples, nw_lags
     """
     try:
-        test_data = dataset.prepare("test", col_set=["feature", "label"])
-        preds = model.predict(test_data["feature"])
-        labels = test_data["label"]
-        ic_series = compute_daily_rank_ic(
-            pd.Series(preds, index=test_data["feature"].index),
-            labels.iloc[:, 0] if labels.ndim > 1 else labels,
-        )
+        ic_series = get_ic_series(model, dataset)
         if len(ic_series) == 0:
-            return {"ic_mean": None, "ic_std": None, "icir": None, "ic_positive_ratio": None}
+            return {
+                "ic_mean": None, "ic_std": None, "icir": None,
+                "ic_positive_ratio": None,
+                "nw_t_stat": None, "nw_p_value": None, "nw_significant": False,
+                "n_samples": 0, "nw_lags": 0,
+            }
 
         ic_mean = float(ic_series.mean())
         ic_std = float(ic_series.std())
         icir = ic_mean / ic_std if ic_std > 0 else float("nan")
         ic_positive_ratio = float((ic_series > 0).mean())
 
+        # Newey-West 显著性检验（第 8.1 节）
+        try:
+            from research.significance import newey_west_test
+            nw_result = newey_west_test(ic_series, max_lags=label_horizon)
+            nw_t_stat = nw_result.get("t_nw")
+            nw_p_value = nw_result.get("p_value_nw")
+            nw_significant = nw_result.get("significant", False)
+            n_samples = nw_result.get("n_samples", len(ic_series))
+            nw_lags = nw_result.get("max_lags", 0)
+        except ImportError:
+            nw_t_stat = ic_mean / (ic_std / np.sqrt(len(ic_series))) if ic_std > 0 else float("nan")
+            nw_p_value = None
+            nw_significant = False
+            n_samples = len(ic_series)
+            nw_lags = 0
+
         return {
             "ic_mean": ic_mean,
             "ic_std": ic_std,
             "icir": icir,
             "ic_positive_ratio": ic_positive_ratio,
+            "nw_t_stat": nw_t_stat,
+            "nw_p_value": nw_p_value,
+            "nw_significant": nw_significant,
+            "n_samples": n_samples,
+            "nw_lags": nw_lags,
         }
     except Exception as e:
         logger.warning("折内评估失败: %s", e)
-        return {"ic_mean": None, "ic_std": None, "icir": None, "ic_positive_ratio": None}
+        return {
+            "ic_mean": None, "ic_std": None, "icir": None,
+            "ic_positive_ratio": None,
+            "nw_t_stat": None, "nw_p_value": None, "nw_significant": False,
+            "n_samples": 0, "nw_lags": 0,
+        }
 
 
 def get_feature_importance(model, dataset) -> dict:
@@ -132,9 +187,9 @@ def get_feature_importance(model, dataset) -> dict:
         return {}
 
 
-def compute_icir(ic_series: pd.Series) -> Dict[str, float]:
+def compute_icir(ic_series: pd.Series, max_lags: Optional[int] = None) -> Dict[str, float]:
     """
-    Compute IC Information Ratio and related metrics.
+    Compute IC Information Ratio and related metrics, including Newey-West adjusted significance.
 
     ICIR = mean(IC) / std(IC)
 
@@ -142,26 +197,50 @@ def compute_icir(ic_series: pd.Series) -> Dict[str, float]:
       ICIR > 0.5 : Acceptable
       ICIR > 1.0 : Excellent
 
+    Args:
+        ic_series: 逐日 IC 序列
+        max_lags: Newey-West 最大滞后阶数（默认 = 标签周期长度）
+
     Returns:
-        Dict with ic_mean, ic_std, icir, ic_positive_ratio, ic_t_stat
+        Dict with ic_mean, ic_std, icir, ic_positive_ratio,
+             naive_t_stat, nw_t_stat, nw_p_value, nw_significant
     """
     ic = ic_series.dropna()
     if len(ic) < 5:
-        return {"ic_mean": np.nan, "ic_std": np.nan, "icir": np.nan,
-                "ic_positive_ratio": np.nan, "ic_t_stat": np.nan}
+        return {
+            "ic_mean": np.nan, "ic_std": np.nan, "icir": np.nan,
+            "ic_positive_ratio": np.nan,
+            "naive_t_stat": np.nan, "nw_t_stat": np.nan,
+            "nw_p_value": np.nan, "nw_significant": False,
+        }
 
     ic_mean = float(ic.mean())
     ic_std = float(ic.std())
     icir = ic_mean / ic_std if ic_std > 0 else np.nan
     ic_positive_ratio = float((ic > 0).mean())
-    ic_t_stat = ic_mean / (ic_std / np.sqrt(len(ic))) if ic_std > 0 else np.nan
+    naive_t_stat = ic_mean / (ic_std / np.sqrt(len(ic))) if ic_std > 0 else np.nan
+
+    # Newey-West 显著性检验（第 8.1 节）
+    try:
+        from research.significance import newey_west_test
+        nw_result = newey_west_test(ic, max_lags=max_lags)
+        nw_t_stat = nw_result.get("t_nw")
+        nw_p_value = nw_result.get("p_value_nw")
+        nw_significant = nw_result.get("significant", False)
+    except ImportError:
+        nw_t_stat = naive_t_stat
+        nw_p_value = 2.0 * (1.0 - stats.norm.cdf(abs(naive_t_stat))) if not np.isnan(naive_t_stat) else np.nan
+        nw_significant = abs(naive_t_stat) > 2.0
 
     return {
         "ic_mean": ic_mean,
         "ic_std": ic_std,
         "icir": float(icir),
         "ic_positive_ratio": ic_positive_ratio,
-        "ic_t_stat": float(ic_t_stat),
+        "naive_t_stat": float(naive_t_stat),
+        "nw_t_stat": nw_t_stat,
+        "nw_p_value": nw_p_value,
+        "nw_significant": nw_significant,
     }
 
 
@@ -358,4 +437,13 @@ def generate_ic_stability_report(ic_series: pd.Series,
 
     logger.info("IC 稳定性报告: ICIR=%.4f, IC_mean=%.4f, IC_+ratio=%.2f%%",
                  icir["icir"], icir["ic_mean"], icir["ic_positive_ratio"] * 100)
+    if icir.get("nw_significant") is not None:
+        if icir["nw_significant"]:
+            logger.info("  → Newey-West 显著性检验: |t|=%.2f (p=%.4f) ✓ 通过 (|t| > 2.0)",
+                         icir.get("nw_t_stat", 0), icir.get("nw_p_value", 1))
+        else:
+            logger.warning(
+                "  → Newey-West 显著性检验: |t|=%.2f (p=%.4f) ✗ 未通过 (|t| ≤ 2.0)，"
+                "结论应降级为'探索性发现'",
+                icir.get("nw_t_stat", 0), icir.get("nw_p_value", 1))
     return icir

@@ -22,27 +22,35 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        run.py (统一入口)                      │
-├─────────────────────────────────────────────────────────────┤
-│  cmd_train  │ cmd_full │ cmd_backtest │ cmd_pick │ cmd_data │
-│  cmd_rolling│ cmd_drift│ cmd_ic_stab  │ cmd_tscv │ cmd_regime│
-│  cmd_sensitivity │ cmd_key_years │ cmd_update │ cmd_validate│
+│  cmd_train │ cmd_full │ cmd_backtest │ cmd_pick │ cmd_data   │
+│  cmd_rolling│cmd_drift│ cmd_ic_stab │ cmd_tscv │ cmd_regime  │
+│  cmd_sensitivity│cmd_key_years│cmd_update│cmd_validate│      │
+│  cmd_optuna │ cmd_explain │                                  │
 ├─────────────────────────────────────────────────────────────┤
 │                    qlib_pipeline (核心管线)                    │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐  │
 │  │ train.py │ │backtest.py│ │dataset.py│ │ic_stability.py│  │
 │  ├──────────┤ ├──────────┤ ├──────────┤ ├──────────────┤  │
 │  │rolling.py│ │ drift.py │ │ tscv.py  │ │  regime.py   │  │
+│  │sensitivity│ │validate.py│ │model.py │ │numpy_compat  │  │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                      research (研究层)                        │
+│  ┌──────────────┐ ┌──────────────┐ ┌────────────────────┐  │
+│  │significance  │ │ risk_model   │ │   attribution      │  │
+│  │portfolio_    │ │ capacity     │ │ experiment_tracker │  │
+│  │constructor   │ │ explain      │ │                    │  │
+│  └──────────────┘ └──────────────┘ └────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                      tuning (调参层)                          │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ optuna_search.py                                     │  │
+│  └──────────────────────────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │                      data_center (数据层)                     │
 │  ┌──────────────┐ ┌──────────────┐ ┌────────────────────┐  │
 │  │daily_update.py│ │data_store.py │ │  csv_loader.py    │  │
 │  └──────────────┘ └──────────────┘ └────────────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│                        model (模型层)                         │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐     │
-│  │lgb_model │ │xgb_model │ │cat_model │ │ensemble  │     │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘     │
 ├─────────────────────────────────────────────────────────────┤
 │                    config (配置层)                            │
 │  ┌──────────────────┐ ┌──────────────────────────────┐     │
@@ -58,8 +66,9 @@
 |----|------|----------|
 | 入口层 | 命令行解析、子命令路由、配置加载 | `run.py` |
 | 管线层 | Qlib 训练、回测、稳健性分析 | `qlib_pipeline/` |
+| 研究层 | 统计检验、归因、行业约束、SHAP 可解释性 | `research/` |
+| 调参层 | Optuna 贝叶斯超参数搜索 | `tuning/` |
 | 数据层 | 数据下载、格式转换、增量更新 | `data_center/` |
-| 模型层 | 自研模型封装（LightGBM/XGBoost/CatBoost） | `model/` |
 | 配置层 | 全局参数管理、消冗余 | `config/` |
 
 ---
@@ -73,7 +82,7 @@ AKShare API
     │
     ▼
 ┌──────────┐     run_qlib_workflow.py     ┌──────────────┐
-│ D:/data/ │ ──────────────────────────▶  │ D:/trae/     │
+│ D:/data/ │ ──────────────────────────▶  │ D:/download/     │
 │ *.csv    │   CSV → Qlib bin 格式转换     │ qlib_bin/    │
 └──────────┘                              │ ├ calendars/ │
                                           │ ├ instruments/│
@@ -104,8 +113,6 @@ python run.py update
 │ 4. 更新 .day.bin    │
 │ 5. 更新 calendars/  │
 │ 6. 更新 instruments/│
-│ 7. 更新 workflow    │
-│    _config.yaml     │
 └────────────────────┘
 ```
 
@@ -137,6 +144,7 @@ cmd_map = {
     "tscv": cmd_tscv, "regime": cmd_regime,
     "sensitivity": cmd_sensitivity, "key-years": cmd_key_years,
     "validate-picks": cmd_validate_picks,
+    "optuna": cmd_optuna, "explain": cmd_explain,
 }
 ```
 
@@ -246,9 +254,9 @@ pred.pkl                    # 预测信号
 
 ### 5.3 Benchmark 注意事项
 
-- 必须使用完整股票代码格式，如 `"SH600000"`
-- 不能使用指数代码（如 `SH000300`），指数不在 features 目录中
-- 推荐使用 `"SH600000"`（浦发银行）作为基准
+- 使用 `SH000300`（沪深300指数）作为回测基准
+- 基准指数数据必须存在于 `features/SH000300/close.day.bin`
+- 回测引擎会从 `backtest.backtest.benchmark` 读取并使用该指数的真实价格曲线
 
 ---
 
@@ -291,7 +299,7 @@ price = pd.Series(close_values, index=pd.to_datetime(dates))
 
 1. **单一配置源**：`config/settings.yaml` 是唯一的全局配置，所有硬编码参数均已提取
 2. **分层配置**：`settings.yaml`（全局）+ `workflow_config.yaml`（Qlib 专用）
-3. **消冗余**：已删除 `model_config.yaml`、`stock_universe.yaml`、`workflow_config_midlong.yaml`，内容合并到 `settings.yaml`
+3. **消冗余**：已删除 `model_config.yaml`、`stock_universe.yaml`、`workflow_config_midlong.yaml` 等冗余配置文件，模型超参统一在 `workflow_config.yaml` 的 `qlib_lgb` 段管理
 4. **命令行覆盖**：所有配置项可通过命令行参数临时覆盖
 
 ### 7.2 配置消费关系
@@ -302,10 +310,7 @@ settings.yaml
     ├── daily_update.py     → qlib_dir
     ├── data_store.py       → data_format, csv_dir, qlib_dir
     ├── csv_loader.py       → csv_dir, start_date
-    ├── model/lgb_model.py  → model.lightgbm
-    ├── model/xgb_model.py  → model.xgboost
-    ├── model/cat_model.py  → model.catboost
-    └── model/ensemble.py   → model.ensemble_weights
+    └── cmd_regime          → regime.*
 
 workflow_config.yaml
     ├── train.py            → init_qlib_env, build_task
