@@ -38,6 +38,100 @@ def rank_ic(predictions: pd.Series, labels: pd.Series) -> float:
     return float(stats.spearmanr(predictions[mask], labels[mask]).correlation)
 
 
+def compute_daily_rank_ic(pred: pd.Series, label: pd.Series) -> pd.Series:
+    """按日期分组计算逐日 RankIC（Spearman 相关系数）。
+
+    pred/label 均为 MultiIndex(datetime, instrument) 的 Series。
+    返回 index 为日期、值为当日 RankIC 的 Series。
+    """
+    df = pd.DataFrame({"pred": pred, "label": label}).dropna()
+    daily_ic = df.groupby(level=0).apply(
+        lambda x: x["pred"].corr(x["label"], method="spearman") if len(x) > 2 else float("nan")
+    )
+    return daily_ic.dropna()
+
+
+def evaluate_fold(model, dataset) -> dict:
+    """在测试集上评估模型表现，返回 IC 相关指标。
+
+    用于 rolling.py / tscv.py 每折训练后的评估环节。
+
+    Args:
+        model: 已训练好的 Qlib 模型
+        dataset: Qlib DatasetH 实例
+
+    Returns:
+        dict with ic_mean, ic_std, icir, ic_positive_ratio
+    """
+    try:
+        test_data = dataset.prepare("test", col_set=["feature", "label"])
+        preds = model.predict(test_data["feature"])
+        labels = test_data["label"]
+        ic_series = compute_daily_rank_ic(
+            pd.Series(preds, index=test_data["feature"].index),
+            labels.iloc[:, 0] if labels.ndim > 1 else labels,
+        )
+        if len(ic_series) == 0:
+            return {"ic_mean": None, "ic_std": None, "icir": None, "ic_positive_ratio": None}
+
+        ic_mean = float(ic_series.mean())
+        ic_std = float(ic_series.std())
+        icir = ic_mean / ic_std if ic_std > 0 else float("nan")
+        ic_positive_ratio = float((ic_series > 0).mean())
+
+        return {
+            "ic_mean": ic_mean,
+            "ic_std": ic_std,
+            "icir": icir,
+            "ic_positive_ratio": ic_positive_ratio,
+        }
+    except Exception as e:
+        logger.warning("折内评估失败: %s", e)
+        return {"ic_mean": None, "ic_std": None, "icir": None, "ic_positive_ratio": None}
+
+
+def get_feature_importance(model, dataset) -> dict:
+    """从训练好的 Qlib LGBModel 中提取特征重要性。
+
+    用于 rolling.py / tscv.py 每折训练后导出特征重要性，
+    为后续 feature_stability() 概念漂移检测提供跨折特征重要性列表。
+
+    Args:
+        model: 已训练好的 Qlib LGBModel 实例
+        dataset: Qlib DatasetH 实例
+
+    Returns:
+        dict of {feature_name: importance_score}，提取失败时返回空 dict
+    """
+    try:
+        # 获取特征名称
+        test_data = dataset.prepare("test", col_set=["feature"])
+        feature_names = list(test_data["feature"].columns)
+
+        # 提取 LightGBM 底层模型的特征重要性
+        if hasattr(model, "model") and hasattr(model.model, "feature_importance"):
+            importances = model.model.feature_importance(importance_type="gain")
+            # 确保长度匹配
+            if len(importances) == len(feature_names):
+                return dict(zip(feature_names, importances.tolist()))
+            elif len(importances) < len(feature_names):
+                # 部分特征未被使用，补 0
+                result = dict(zip(feature_names, [0.0] * len(feature_names)))
+                for i, imp in enumerate(importances):
+                    if i < len(feature_names):
+                        result[feature_names[i]] = float(imp)
+                return result
+            else:
+                logger.warning("特征重要性数量(%d)与特征数量(%d)不匹配，截断处理", len(importances), len(feature_names))
+                return dict(zip(feature_names, importances[:len(feature_names)].tolist()))
+        else:
+            logger.warning("模型不支持 feature_importance 接口，无法提取特征重要性")
+            return {}
+    except Exception as e:
+        logger.warning("提取特征重要性失败: %s", e)
+        return {}
+
+
 def compute_icir(ic_series: pd.Series) -> Dict[str, float]:
     """
     Compute IC Information Ratio and related metrics.

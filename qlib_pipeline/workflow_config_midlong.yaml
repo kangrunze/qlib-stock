@@ -171,7 +171,7 @@ qlib_lgb:
     lambda_l2: 800.0            # 【改】580.9 → 800.0（加大 L2，抑制过拟合）
     max_depth: 7                 # 【改】8 → 7（降低复杂度）
     num_leaves: 128              # 【改】210 → 128（降低叶子数，约 2^7）
-    num_threads: 20
+    num_threads: 20            # 训练线程数（⚠ 当前未经过实测验证，建议在 Windows 环境下实测 4/8/20 后取稳定值；若出现卡死/内存暴涨，优先降至 4）
 
 # =============================================================================
 # 8. Optuna 超参搜索配置
@@ -205,12 +205,14 @@ shap:
 strategy:
   class: "TopkDropoutStrategy"
   module_path: "qlib.contrib.strategy.signal_strategy"
-  kwargs:
-    topk: 25                    # 【改】50 → 25（精选持仓）
-    n_drop: 3                   # 【改】5 → 3（低换手率，每次只换 3 只）
+  # 注意: topk/n_drop 请统一在 backtest.strategy.kwargs 中配置，此处不再重复
+  kwargs: {}
   rebalance_freq: "monthly"     # 月频调仓
   weight_method: "equal"        # 等权分配（简单稳健，适合中长线）
-  industry_neutral: true        # 【改】开启行业中性化，避免赌单一行业
+  industry_neutral: true        # 注意：该参数当前仅在自研 daily_run.py / strategy/topk_selector.py
+                              # 路径下生效；通过 run.py full 跑的 Qlib 官方链路暂不支持行业中性化，
+                              # 该参数在此路径下不产生任何效果。如需真正的行业中性化回测结果，
+                              # 请参考方案 B 补齐 Qlib 自定义策略，或使用自研 daily_run.py 路径。
   max_stocks_per_industry: 4    # 【改】每行业最多 4 只
 
 # =============================================================================
@@ -256,7 +258,7 @@ backtest:
     start_time: "2025-07-01"
     end_time: "2026-06-25"
     account: 100000000                     # 初始资金 1 亿
-    benchmark: "600000"                    # 浦发银行作为基准
+    benchmark: "600000"                    # 基准（⚠ 当前用浦发银行个股代替沪深300指数，超额收益指标不可信，需先补齐指数数据后改为 SH000300）
     exchange_kwargs:
       freq: "day"
       limit_threshold: 0.095

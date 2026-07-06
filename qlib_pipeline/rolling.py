@@ -230,6 +230,11 @@ class RollingTrainer:
                     model.fit(dataset)
                     rid = R.get_recorder().id
 
+                # 评估：在测试集上计算 IC 指标
+                from qlib_pipeline.ic_stability import evaluate_fold, get_feature_importance
+                eval_metrics = evaluate_fold(model, dataset)
+                feat_importance = get_feature_importance(model, dataset)
+
                 fold_result = {
                     "fold": w["fold"],
                     "train_start": w["train"][0],
@@ -240,8 +245,14 @@ class RollingTrainer:
                     "test_end": w["test"][1],
                     "recorder_id": rid,
                     "status": "success",
+                    "feature_importance": feat_importance,
+                    **eval_metrics,
                 }
-                logger.info("Fold %d 完成: rid=%s", w["fold"], rid)
+                logger.info("Fold %d 完成: rid=%s, IC_mean=%.4f, ICIR=%.4f, feats=%d",
+                             w["fold"], rid,
+                             eval_metrics.get("ic_mean", 0) or 0,
+                             eval_metrics.get("icir", 0) or 0,
+                             len(feat_importance))
 
             except Exception as e:
                 fold_result = {

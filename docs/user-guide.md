@@ -230,7 +230,29 @@ python run.py sensitivity
 python run.py key-years --years 2020,2022,2024
 ```
 
-### 5.5 命令行参数覆盖
+### 5.5 选股推荐验证
+
+```bash
+# 验证历史选股推荐的实际表现
+python run.py validate-picks --picks-dir output/picks --lookback-days 20
+```
+
+**用途**：读取 `output/picks/` 目录下历史生成的选股推荐 CSV，用 Qlib 真实价格数据计算推荐股票在未来 5/10/20 天内的实际收益率和命中率，生成验证报告。
+
+**输出内容**：
+- 各推荐日期的命中率（推荐股票中上涨的比例）
+- 不同持有期（5d/10d/20d）的平均超额收益
+- 验证报告保存到 `output/validation/` 目录
+
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| `--picks-dir` | 历史推荐 CSV 目录 | `output/picks` |
+| `--lookback-days` | 回看天数（用于获取价格数据） | `20` |
+| `--output-dir` | 验证报告输出目录 | `output/validation` |
+
+> 必须先运行 `python run.py full` 生成选股推荐 CSV，此命令才能使用。
+
+### 5.6 命令行参数覆盖
 
 所有配置项都可以通过命令行临时覆盖，不修改配置文件：
 
@@ -244,7 +266,6 @@ python run.py full --config qlib_pipeline/workflow_config_midlong.yaml
 | 参数 | 说明 | 默认值 |
 |---|---|---|
 | `--handler` | 特征处理器 | `Alpha158` |
-| `--model-type` | 模型类型 | `lgb` |
 | `--loss` | 损失函数 (`mse` / `rank`) | `mse` |
 | `--topk` | 持仓股票数 | `50` |
 | `--pick-topk` | 选股推荐数量 | `30` |
@@ -311,7 +332,7 @@ python run.py full --config qlib_pipeline/workflow_config_midlong.yaml
 | `max_depth` | `qlib_lgb.kwargs` | `8` | 树深度，越大模型越复杂 |
 | `instruments` | `data_handler` | `csi300` | 股票池：`csi300` / `csi500` / `csi800` / `all` |
 | `rebalance_freq` | `strategy` | `monthly` | 调仓频率：`daily` / `weekly` / `monthly` |
-| `industry_neutral` | `strategy` | `false` | 是否行业中性化 |
+| `industry_neutral` | `strategy` | `false` | 是否行业中性化（⚠ 当前仅自研 daily_run.py 链路生效，Qlib 官方链路暂不支持） |
 
 ---
 
@@ -595,6 +616,8 @@ python run.py ic-stability
 python run.py tscv --n-splits 5
 python run.py regime
 python run.py sensitivity
+python run.py key-years
+python run.py validate-picks
 ```
 
 ### 11.2 重要文件路径

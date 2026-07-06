@@ -37,6 +37,7 @@ Usage:
 """
 
 import argparse
+import copy
 import logging
 import os
 import sys
@@ -141,8 +142,6 @@ def parse_args():
     full_parser.add_argument("--config", type=str, default=None)
     full_parser.add_argument("--handler", type=str, default=None,
                         choices=["Alpha158", "Alpha360"])
-    full_parser.add_argument("--model-type", type=str, default=None,
-                        choices=["lgb", "xgb"])
     full_parser.add_argument("--loss", type=str, default=None,
                         choices=["mse", "rank"])
     full_parser.add_argument("--topk", type=int, default=None)
@@ -156,8 +155,6 @@ def parse_args():
     train_parser.add_argument("--config", type=str, default=None)
     train_parser.add_argument("--handler", type=str, default=None,
                         choices=["Alpha158", "Alpha360"])
-    train_parser.add_argument("--model-type", type=str, default=None,
-                        choices=["lgb", "xgb"])
     train_parser.add_argument("--loss", type=str, default=None,
                         choices=["mse", "rank"])
     train_parser.add_argument("--experiment", type=str, default="qlib_train")
@@ -251,16 +248,20 @@ def parse_args():
                       help="逗号分隔年份 (e.g. 2020,2022,2024)")
     ky_parser.add_argument("--output-dir", type=str, default="output/key_years")
 
+    # === validate-picks: 验证历史推荐 ===
+    vp_parser = subparsers.add_parser("validate-picks", help="验证历史选股推荐的实际表现")
+    vp_parser.add_argument("--picks-dir", type=str, default="output/picks")
+    vp_parser.add_argument("--lookback-days", type=int, default=20)
+    vp_parser.add_argument("--output-dir", type=str, default="output/validation")
+
     return parser.parse_args()
 
 
 def apply_cli_overrides(config: dict, args) -> dict:
     if hasattr(args, "handler") and args.handler:
         config.setdefault("dataset", {})["handler"] = args.handler
-    if hasattr(args, "model_type") and args.model_type:
-        config.setdefault("model", {})["type"] = args.model_type
     if hasattr(args, "loss") and args.loss:
-        config.setdefault("model", {}).setdefault("lgb", {}).setdefault("kwargs", {})["loss"] = args.loss
+        config.setdefault("qlib_lgb", {}).setdefault("kwargs", {})["loss"] = args.loss
     if hasattr(args, "topk") and args.topk:
         config.setdefault("backtest", {}).setdefault("strategy", {}).setdefault("kwargs", {})["topk"] = args.topk
     return config
@@ -333,7 +334,7 @@ def cmd_backtest(args):
     with R.start(experiment_name=experiment_bt):
         recorder = R.get_recorder(recorder_id=args.rid, experiment_name=args.experiment)
         model = recorder.load_object("trained_model")
-        port_config = port_config.copy()
+        port_config = copy.deepcopy(port_config)
         s_kwargs = port_config.setdefault("strategy", {}).setdefault("kwargs", {})
         s_kwargs["model"] = model
         s_kwargs["dataset"] = dataset
@@ -409,6 +410,37 @@ def _check_data_availability(config: dict) -> bool:
     stock_count = len([d for d in features_dir.iterdir() if d.is_dir()])
 
     logger.info("[数据预检] ✓ 数据可用: %d 只股票, %d 个交易日", stock_count, cal_lines)
+
+    # 检查 5: 时间范围校验（配置的时间段是否超出数据日历）
+    try:
+        from qlib.data import D
+        calendar = D.calendar(start_time=None, end_time=None)
+        cal_start, cal_end = pd.Timestamp(str(calendar[0])), pd.Timestamp(str(calendar[-1]))
+
+        segments = config.get("dataset", {}).get("segments", {})
+        for seg_name, seg in segments.items():
+            seg_end = pd.Timestamp(seg[1] if isinstance(seg, (list, tuple)) else seg.get("end"))
+            if seg_end > cal_end:
+                logger.error("配置的 %s 段结束日期 %s 超出数据日历范围（最后交易日 %s）",
+                             seg_name, seg_end.strftime("%Y-%m-%d"), cal_end.strftime("%Y-%m-%d"))
+                return False
+
+        bt = config.get("backtest", {}).get("backtest", {})
+        if bt.get("end_time"):
+            bt_end = pd.Timestamp(bt["end_time"])
+            if bt_end > cal_end:
+                logger.error("回测 end_time %s 超出数据日历范围（最后交易日 %s）",
+                             bt_end.strftime("%Y-%m-%d"), cal_end.strftime("%Y-%m-%d"))
+                return False
+        if bt.get("start_time"):
+            bt_start = pd.Timestamp(bt["start_time"])
+            if bt_start < cal_start:
+                logger.error("回测 start_time %s 早于数据日历起始日期（最早交易日 %s）",
+                             bt_start.strftime("%Y-%m-%d"), cal_start.strftime("%Y-%m-%d"))
+                return False
+    except Exception as e:
+        logger.warning("无法读取 Qlib 日历用于时间范围校验: %s", e)
+
     return True
 
 
@@ -488,7 +520,7 @@ def cmd_full(args):
         with R.start(experiment_name=f"{args.experiment}_backtest"):
             recorder = R.get_recorder(recorder_id=rid, experiment_name=args.experiment)
             model_bt = recorder.load_object("trained_model")
-            port_config = port_config.copy()
+            port_config = copy.deepcopy(port_config)
             s_kwargs = port_config.setdefault("strategy", {}).setdefault("kwargs", {})
             s_kwargs["model"] = model_bt
             s_kwargs["dataset"] = dataset
@@ -638,9 +670,25 @@ def cmd_drift(args):
         logger.info("[步骤 2/3] ✓ 数据准备完成")
 
         logger.info("[步骤 3/3] 计算 PSI 特征漂移指标 ...")
-        from qlib_pipeline.drift import compute_psi_dataframe, generate_drift_report
+        from qlib_pipeline.drift import compute_psi_dataframe, generate_drift_report, detect_concept_drift
         psi_df = compute_psi_dataframe(train_df, test_df)
-        drift_df = pd.DataFrame({"date": [], "ic": [], "rolling_ic": [], "drift_warning": []})
+
+        # 用真实模型预测计算 IC 序列，再传给概念漂移检测
+        from qlib_pipeline.ic_stability import compute_daily_rank_ic
+        from qlib.utils import init_instance_by_config
+        model = init_instance_by_config(task["model"])
+        model.fit(dataset)
+        test_data_full = dataset.prepare("test", col_set=["feature", "label"], data_key=qlib.data.D.handler)
+        preds_drift = model.predict(test_data_full["feature"])
+        labels_drift = test_data_full["label"]
+        ic_series_drift = compute_daily_rank_ic(
+            pd.Series(preds_drift, index=test_data_full["feature"].index),
+            labels_drift.iloc[:, 0] if labels_drift.ndim > 1 else labels_drift,
+        )
+        drift_df = detect_concept_drift(ic_series_drift)
+        logger.info("  → 概念漂移检测: %d 个预警", int(drift_df["drift_warning"].sum()))
+
+        # TODO: feature_stability() 需要跨折特征重要性列表，依赖 rolling.py 改造完成后接入
         report = generate_drift_report(psi_df, drift_df, 0.0, output_dir=args.output_dir)
         logger.info("[步骤 3/3] ✓ 漂移检测完成")
         logger.info("  → 总特征数: %d, 显著漂移特征数: %d",
@@ -678,15 +726,23 @@ def cmd_ic_stability(args):
     if "label" in test_data and preds is not None:
         labels = test_data["label"]
         logger.info("  → 标签样本数: %d", len(labels))
-        # Simplified per-date IC computation
-        logger.info("  → 正在计算逐日 IC 序列 ...")
+        from qlib_pipeline.ic_stability import compute_daily_rank_ic
+        ic_series = compute_daily_rank_ic(
+            pd.Series(preds, index=test_data["feature"].index),
+            labels.iloc[:, 0] if labels.ndim > 1 else labels,
+        )
+        logger.info("  → 真实逐日 RankIC 序列: %d 个交易日, IC 均值=%.4f",
+                     len(ic_series), ic_series.mean())
+    else:
+        logger.warning("  → 无法计算真实 IC 序列，使用空数据兜底")
+        ic_series = pd.Series(dtype=float)
 
     logger.info("[步骤 3/4] ✓ IC 序列计算完成")
 
     logger.info("[步骤 4/4] 生成 IC 稳定性报告 (ICIR / 衰减曲线 / 分层分析) ...")
     from qlib_pipeline.ic_stability import generate_ic_stability_report
     report = generate_ic_stability_report(
-        pd.Series([0.05, 0.06, 0.04, 0.07, 0.03, 0.05, 0.06, 0.04]),
+        ic_series,
         output_dir=args.output_dir,
     )
     logger.info("[步骤 4/4] ✓ IC 稳定性分析完成")
@@ -736,9 +792,24 @@ def cmd_regime(args):
         logger.info("[步骤 2/2] 进行市场阶段分类与稳定性分析 ...")
         regime_df = classify_market_regime(price)
         logger.info("  → 识别到 %d 个市场阶段", len(regime_df["regime"].unique()) if "regime" in regime_df.columns else "N/A")
-        # Generate dummy IC series for demo
-        ic_series = pd.Series(np.random.normal(0.05, 0.1, len(regime_df)),
-                              index=regime_df["date"].values)
+
+        # 训练模型并生成真实 IC 序列
+        logger.info("  → 训练模型以计算真实 IC 序列 ...")
+        task = build_task(config)
+        from qlib.utils import init_instance_by_config
+        dataset = init_instance_by_config(task["dataset"])
+        model = init_instance_by_config(task["model"])
+        model.fit(dataset)
+        test_data = dataset.prepare("test", col_set=["feature", "label"], data_key=qlib.data.D.handler)
+        preds = model.predict(test_data["feature"])
+        labels = test_data["label"]
+        from qlib_pipeline.ic_stability import compute_daily_rank_ic
+        ic_series = compute_daily_rank_ic(
+            pd.Series(preds, index=test_data["feature"].index),
+            labels.iloc[:, 0] if labels.ndim > 1 else labels,
+        )
+        logger.info("  → 真实 RankIC 序列: %d 个交易日, IC 均值=%.4f", len(ic_series), ic_series.mean())
+
         df = regime_analysis(ic_series, regime_df, output_dir=args.output_dir)
         logger.info("[步骤 2/2] ✓ 市场阶段分析完成: %d 个阶段", len(df))
         logger.info("  → 报告已保存到: %s", args.output_dir)
@@ -794,6 +865,98 @@ def cmd_update(args):
     daily_update(days=days, skip_bin=skip_bin, workers=workers)
 
 
+def cmd_validate_picks(args):
+    """验证历史选股推荐的实际表现"""
+    logger.info("[命令] validate-picks — 验证历史选股推荐")
+
+    from pathlib import Path
+    picks_dir = Path(args.picks_dir)
+    if not picks_dir.exists():
+        logger.error("推荐目录不存在: %s", picks_dir)
+        logger.info("  → 请先运行 python run.py full 生成选股推荐")
+        return
+
+    csv_files = sorted(picks_dir.glob("stock_picks_*.csv"))
+    if not csv_files:
+        logger.error("推荐目录下无 CSV 文件: %s", picks_dir)
+        return
+
+    logger.info("  → 找到 %d 个历史推荐文件", len(csv_files))
+
+    all_recommendations = []
+    for f in csv_files:
+        try:
+            df = pd.read_csv(f)
+            all_recommendations.append(df)
+        except Exception as e:
+            logger.warning("读取 %s 失败: %s", f.name, e)
+
+    if not all_recommendations:
+        logger.error("无法读取任何推荐文件")
+        return
+
+    import qlib
+    from qlib.data import D
+    init_qlib_env({})  # 使用默认配置初始化 Qlib
+
+    recs_df = pd.concat(all_recommendations, ignore_index=True)
+    logger.info("  → 共 %d 条推荐记录", len(recs_df))
+
+    # 获取推荐股票的价格数据
+    lookback = args.lookback_days
+    from recommendation_center.validator import RecommendationValidator
+
+    validator = RecommendationValidator()
+    validation_results = []
+    horizons = [5, 10, 20]
+
+    for _, rec in recs_df.iterrows():
+        try:
+            stock = rec["stock_code"]
+            date = rec["date"]
+            price_data = D.features(
+                [stock], ["$close"],
+                start_time=date,
+                end_time=pd.Timestamp(date) + pd.Timedelta(days=lookback + 30)
+            )
+            if price_data is None or price_data.empty:
+                continue
+
+            base_price = price_data.iloc[0].values[0] if len(price_data) > 0 else None
+            if base_price is None:
+                continue
+
+            result = {"date": date, "stock_code": stock, "rank": rec.get("rank", 0), "score": rec.get("score", 0.0)}
+            for h in horizons:
+                if h < len(price_data):
+                    future_price = price_data.iloc[h].values[0]
+                    ret = (future_price - base_price) / base_price
+                    result[f"ret_{h}d"] = ret
+                else:
+                    result[f"ret_{h}d"] = np.nan
+            validation_results.append(result)
+        except Exception as e:
+            continue
+
+    if not validation_results:
+        logger.error("无法完成验证（推荐日期可能超出数据范围）")
+        return
+
+    val_df = pd.DataFrame(validation_results)
+    report = validator.generate_validation_report(val_df, output_dir=args.output_dir)
+
+    logger.info("=" * 60)
+    logger.info("验证报告摘要:")
+    for horizon, stats in report.get("by_horizon", {}).items():
+        logger.info("  %s: 命中率=%.2f%%, 平均收益=%.4f, 样本数=%d",
+                     horizon,
+                     stats.get("hit_rate", 0) * 100,
+                     stats.get("avg_return", 0),
+                     stats.get("count", 0))
+    logger.info("=" * 60)
+    logger.info("  → 详细报告已保存到: %s", args.output_dir)
+
+
 def cmd_pick(args):
     """选股推荐：从已有回测结果中提取 Top-K 股票"""
     logger.info("[命令] pick — 选股推荐 (recorder_id=%s)", args.rid)
@@ -828,13 +991,14 @@ def main():
         "rolling": cmd_rolling, "drift": cmd_drift, "ic-stability": cmd_ic_stability,
         "tscv": cmd_tscv, "regime": cmd_regime,
         "sensitivity": cmd_sensitivity, "key-years": cmd_key_years,
+        "validate-picks": cmd_validate_picks,
     }
     fn = cmd_map.get(args.command)
     if fn:
         fn(args)
     else:
         logger.info("未指定子命令，默认执行 full 流程")
-        args.config = None; args.handler = None; args.model_type = None
+        args.config = None; args.handler = None
         args.loss = None; args.topk = None; args.pick_topk = 30
         args.experiment = "qlib_pipeline"; args.output_dir = "output/qlib_charts"
         cmd_full(args)

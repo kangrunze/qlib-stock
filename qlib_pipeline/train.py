@@ -66,11 +66,16 @@ def build_task(config: dict) -> dict:
     # Model — 使用 qlib_lgb 配置（Qlib 原生 LGBModel）
     model_cfg = config.get("qlib_lgb", create_rank_model())
 
+    kwargs = model_cfg.get("kwargs", {})
+    # 确保 LightGBM 随机种子生效（可复现训练）
+    seed = config.get("experiment", {}).get("random_seed", 42)
+    kwargs.setdefault("seed", seed)
+
     task = {
         "model": {
             "class": model_cfg.get("class", "LGBModel"),
             "module_path": model_cfg.get("module_path", "qlib.contrib.model.gbdt"),
-            "kwargs": model_cfg.get("kwargs", {}),
+            "kwargs": kwargs,
         },
         "dataset": {
             "class": "DatasetH",
@@ -91,6 +96,11 @@ def init_qlib_env(config: dict):
     os.environ.setdefault("NUMEXPR_MAX_THREADS", "1")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+    # 设置 numpy 全局随机种子确保可复现
+    import numpy as np
+    seed = config.get("experiment", {}).get("random_seed", 42)
+    np.random.seed(seed)
 
     provider_uri = config.get("qlib", {}).get("provider_uri", "d:/project/qlib-stock/qlib_data/cn_data")
     logger.info("初始化 Qlib: %s", provider_uri)

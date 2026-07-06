@@ -27,49 +27,4 @@ def load_workflow_config(config_path: Optional[str] = None) -> dict:
         return yaml.safe_load(f)
 
 
-def create_dataset(handler_type: str = "Alpha158", config: Optional[dict] = None, **kwargs):
-    """
-    Create Qlib DatasetH with specified handler.
 
-    Args:
-        handler_type: "Alpha158" or "Alpha360"
-        config: workflow config dict, loaded from workflow_config.yaml if None
-        **kwargs: override config values
-
-    Returns:
-        qlib.data.dataset.DatasetH instance
-    """
-    import qlib
-    from qlib.utils import init_instance_by_config
-
-    cfg = config or load_workflow_config()
-
-    # Merge kwargs overrides
-    for k, v in kwargs.items():
-        if "." in k:
-            parts = k.split(".")
-            target = cfg
-            for p in parts[:-1]:
-                target = target.setdefault(p, {})
-            target[parts[-1]] = v
-        else:
-            cfg[k] = v
-
-    dataset_cfg = cfg.get("dataset", {})
-    dataset_cfg["kwargs"]["handler"]["class"] = handler_type
-    dataset_cfg["kwargs"]["handler"]["module_path"] = "qlib.contrib.data.handler"
-
-    # Update handler kwargs from config
-    handler_overrides = cfg.get("data_handler", {})
-    if handler_overrides:
-        dataset_cfg["kwargs"]["handler"]["kwargs"].update(handler_overrides)
-
-    logger.info("创建 Dataset: handler=%s, segments=%s", handler_type, dataset_cfg["kwargs"]["segments"])
-
-    return init_instance_by_config(dataset_cfg)
-
-
-def create_dataset_from_task(task: dict):
-    """Create dataset directly from a task config dict."""
-    from qlib.utils import init_instance_by_config
-    return init_instance_by_config(task["dataset"])

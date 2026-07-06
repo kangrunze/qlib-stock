@@ -211,6 +211,11 @@ class PurgedKFoldCV:
                     model.fit(dataset)
                     rid = R.get_recorder().id
 
+                # 评估：在测试集上计算 IC 指标
+                from qlib_pipeline.ic_stability import evaluate_fold, get_feature_importance
+                eval_metrics = evaluate_fold(model, dataset)
+                feat_importance = get_feature_importance(model, dataset)
+
                 self.fold_results.append({
                     "fold": i,
                     "train_start": train_dates[0],
@@ -221,8 +226,14 @@ class PurgedKFoldCV:
                     "n_test_days": len(test_dates),
                     "recorder_id": rid,
                     "status": "success",
+                    "feature_importance": feat_importance,
+                    **eval_metrics,
                 })
-                logger.info("Fold %d 完成: rid=%s", i, rid)
+                logger.info("Fold %d 完成: rid=%s, IC_mean=%.4f, ICIR=%.4f, feats=%d",
+                             i, rid,
+                             eval_metrics.get("ic_mean", 0) or 0,
+                             eval_metrics.get("icir", 0) or 0,
+                             len(feat_importance))
 
             except Exception as e:
                 self.fold_results.append({

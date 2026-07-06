@@ -368,12 +368,17 @@ def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
         print(f"{'排名':<6}{'股票代码':<12}{'预测得分':>10}{'信号强度':>12}")
         print("-" * 70)
 
+        # 基于当日横截面分位数进行信号强度分级（适配 loss=mse 和 loss=rank 两种模式）
+        scores = picks["score"]
+        q80 = scores.quantile(0.8)
+        q50 = scores.quantile(0.5)
+
         for _, row in picks.iterrows():
             score = row["score"]
-            # 信号强度分类
-            if score > 0.03:
+            # 信号强度分类：基于当日分位数
+            if score >= q80:
                 strength = "★★★ 强"
-            elif score > 0.01:
+            elif score >= q50:
                 strength = "★★☆ 中"
             elif score > 0:
                 strength = "★☆☆ 弱"
@@ -382,10 +387,10 @@ def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
             print(f"  #{int(row['rank']):<4d} {row['stock_code']:<10} {score:>10.6f} {strength:>12}")
 
         print("-" * 70)
-        n_strong = (picks["score"] > 0.03).sum()
-        n_medium = ((picks["score"] > 0.01) & (picks["score"] <= 0.03)).sum()
-        n_weak = ((picks["score"] > 0) & (picks["score"] <= 0.01)).sum()
-        print(f"  强信号(>0.03): {n_strong}只 | 中信号(0.01~0.03): {n_medium}只 | 弱信号(0~0.01): {n_weak}只")
+        n_strong = (scores >= q80).sum()
+        n_medium = ((scores >= q50) & (scores < q80)).sum()
+        n_weak = ((scores > 0) & (scores < q50)).sum()
+        print(f"  强信号(≥P80): {n_strong}只 | 中信号(P50~P80): {n_medium}只 | 弱信号(0~P50): {n_weak}只")
         print(f"  平均得分: {picks['score'].mean():.6f} | 最高: {picks['score'].max():.6f} | 最低: {picks['score'].min():.6f}")
         print("=" * 70)
 

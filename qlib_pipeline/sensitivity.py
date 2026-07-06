@@ -96,12 +96,16 @@ def _single_train(config: dict, param_overrides: dict) -> Optional[float]:
 
         with R.start(experiment_name="sensitivity_scan"):
             model.fit(dataset)
-            # Extract best valid l2 from model's evals_result
-            if hasattr(model, "evals_result_") and "valid" in model.evals_result_:
-                # LGBModel stores evals_result_ differently
+            # Extract best valid l2 from model's evals_result (Qlib LGBModel uses evals_result, not sklearn-style evals_result_)
+            if hasattr(model, "evals_result") and "valid" in model.evals_result:
+                valid_scores = model.evals_result.get("valid", {}).get("l2", [])
+                if valid_scores:
+                    return float(min(valid_scores))
+            elif hasattr(model, "evals_result_") and "valid" in model.evals_result_:
                 valid_scores = model.evals_result_.get("valid", {}).get("l2", [])
                 if valid_scores:
                     return float(min(valid_scores))
+            logger.warning("无法从模型中提取 valid l2 分数，敏感性得分将退化为 0.0，请检查 Qlib 版本兼容性")
             return 0.0
     except Exception as e:
         logger.warning("训练失败 (%s): %s", param_overrides, e)
