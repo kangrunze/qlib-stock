@@ -69,7 +69,7 @@ def get_ic_series(model, dataset) -> pd.Series:
     preds = model.predict(dataset, segment="test")
     labels = test_data["label"]
     ic_series = compute_daily_rank_ic(
-        pd.Series(preds, index=test_data["feature"].index),
+        preds,
         labels.iloc[:, 0] if labels.ndim > 1 else labels,
     )
     return ic_series

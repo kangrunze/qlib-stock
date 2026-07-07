@@ -32,7 +32,7 @@
 #   日常快速训练:  handler=Alpha158, loss=mse, topk=50
 #   追求高 IC:     handler=Alpha360, loss=rank, topk=30
 #   稳健性验证:    handler=Alpha158, 然后运行 rolling / tscv / regime
-#   长周期持有:    使用 --config qlib_pipeline/workflow_config_longterm.yaml（primary=xs_ret_60d, horizon=60）
+#   长周期持有:    labels.primary=ret_60d, horizon=60
 # =============================================================================
 # [IMPORTANT] 时间体系说明
 # =============================================================================
@@ -71,7 +71,7 @@
 qlib:
   # ⚠ provider_uri 必须与 config/settings.yaml:data_source.qlib_dir 保持一致
   # provider_uri: "d:/project/qlib-stock/qlib_data/cn_data"  # Qlib bin 数据目录
-  provider_uri: "D:/trae/qlib_bin"
+  provider_uri: "D:/download/qlib_bin"
   region: "cn"                    # 市场区域: cn=A股沪深, us=美股
 
 # =============================================================================
@@ -142,7 +142,17 @@ data_handler:
   # ★ 股票池: csi300(沪深300) | csi500(中证500) | csi800(中证800) | all(全A股)
   #   控制训练/验证/测试中使用的股票范围
   #   csi300 标的少、质量高、训练快；all 标的多、噪声大、更贴近实战
-  instruments: "csi300"
+  instruments:
+  - "SH600000"
+  - "SH600004"
+  - "SH600006"
+  - "SH600007"
+  - "SH600008"
+  - "SH600009"
+  - "SH600010"
+  - "SH600011"
+  - "SH600012"
+  - "SH600015"
 
 # =============================================================================
 # 5. 数据集配置 — 训练/验证/测试时间划分 ★
@@ -174,8 +184,9 @@ dataset:
 # 消费方: qlib_pipeline/train.py : build_task() → 构建 Qlib task dict
 # 作用: 定义 run.py 使用的 Qlib 官方 LGBModel 超参数
 #
-# 本段配置通过 Qlib 封装的 LGBModel 训练（run.py 主管线）。
-# 如需使用 sklearn 原生 LightGBM，请参考 train.py 旧管线。
+# 与第 6 节的区别：
+#   第 6 节 → 通过 sklearn API 训练原始 LightGBM（train.py 旧管线）
+#   第 7 节 → 通过 Qlib 封装的 LGBModel 训练（run.py 主管线，推荐）
 #
 # loss 函数选择指南：
 #   mse  — 回归模式，预测具体收益率数值，简单直观

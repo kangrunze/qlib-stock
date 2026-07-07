@@ -18,7 +18,6 @@ from research.significance import (
     newey_west_se,
     newey_west_test,
     multiple_testing_correction,
-    ic_significance_report,
 )
 
 from research.risk_model import (

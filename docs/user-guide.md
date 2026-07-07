@@ -233,7 +233,6 @@ python run.py capacity --rid <backtest_recorder_id> --account 100000000 # 组合
 ```bash
 python run.py benchmark                  # 运行全部对比实验（E1-E7）
 python run.py benchmark --experiments E1,E3,E6  # 仅运行指定实验
-python run.py benchmark --config qlib_pipeline/workflow_config_longterm.yaml  # 针对中长周期配置
 ```
 
 | 实验 | 对比对象 | 判断标准 |

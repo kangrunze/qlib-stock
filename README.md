@@ -25,7 +25,7 @@ python run.py update
 |------|------|------|
 | 数据管理 | AKShare 下载 / CSV 转 Qlib bin / 增量更新 | `python run.py data` / `python run.py update` |
 | 模型训练 | Qlib LGBModel + Alpha158/360 | `python run.py train` |
-| 回测分析 | TopkDropoutStrategy + 图表生成 + 成本拖累拆解 + 风格暴露诊断 | `python run.py backtest --rid <ID>` |
+| 回测分析 | TopkDropoutStrategy + 图表生成 + 风格暴露诊断 | `python run.py backtest --rid <ID>` |
 | 选股推荐 | Top-K 股票推荐 + 历史验证 | `python run.py pick` / `python run.py validate-picks` |
 | 稳健性验证 | Walk-Forward / IC 稳定性 / 特征漂移 | `python run.py rolling` / `python run.py ic-stability` / `python run.py drift` |
 | 鲁棒性深化 | TSCV / 市场阶段分析 / 敏感性分析 / 关键年份回测 | `python run.py tscv` / `python run.py regime` / `python run.py sensitivity` / `python run.py key-years` |
@@ -41,8 +41,7 @@ qlib-stock/
 ├── config/
 │   └── settings.yaml            # 全局配置（数据路径、模型参数、策略等）
 ├── qlib_pipeline/
-│   ├── workflow_config.yaml     # Qlib 工作流配置（短周期默认）
-│   ├── workflow_config_longterm.yaml  # 中长周期配置
+│   ├── workflow_config.yaml     # Qlib 工作流配置
 │   ├── train.py                 # 训练管线
 │   ├── dataset.py               # 配置加载器
 │   ├── backtest.py              # 回测分析
@@ -69,7 +68,11 @@ qlib-stock/
 ├── data_center/                 # 数据层
 │   ├── daily_update.py          # 每日增量更新
 │   ├── data_store.py            # 统一数据存储接口
-│   └── csv_loader.py            # CSV 数据加载器
+│   ├── csv_loader.py            # CSV 数据加载器
+│   ├── akshare_client.py        # AKShare API 客户端
+│   ├── download_history.py      # 历史数据下载
+│   ├── duckdb_store.py          # DuckDB 存储后端
+│   └── data_validator.py        # 数据校验
 ├── docs/                        # 文档
 │   ├── user-guide.md            # 运行说明
 │   ├── configuration.md         # 配置参考

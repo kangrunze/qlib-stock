@@ -12,7 +12,7 @@
 data_source:
   data_format: "csv"           # 数据格式: csv / parquet / qlib
   csv_dir: "D:/data"           # CSV 数据目录
-  qlib_dir: "D:/download/qlib_bin" # Qlib bin 数据目录（需与 workflow_config.yaml:qlib.provider_uri 一致）
+  qlib_dir: "D:/trae/qlib_bin" # Qlib bin 数据目录（需与 workflow_config.yaml:qlib.provider_uri 一致）
   start_date: "2005-01-01"     # 数据起始日期
   max_workers: 10              # 并发下载线程数
   retry_max: 3                 # API 请求最大重试次数
@@ -31,6 +31,9 @@ output:
   sensitivity: "output/sensitivity"
   key_years: "output/key_years"
   validation: "output/validation"
+  benchmark: "output/benchmark"
+  optuna: "output/optuna"
+  shap: "output/shap"
 
 # ===== 策略全局参数 =====
 strategy:

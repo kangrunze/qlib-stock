@@ -81,7 +81,7 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                 x=list(cum_ret.index.astype(str)),
                 y=_to_list(cum_ret),
                 mode='lines',
-                name='Strategy',
+                name='策略收益',
                 line=dict(color='steelblue', width=2)
             ))
             if bench is not None and len(bench) > 0:
@@ -90,13 +90,13 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                     x=list(cum_bench.index.astype(str)),
                     y=_to_list(cum_bench),
                     mode='lines',
-                    name='Benchmark',
+                    name='基准收益',
                     line=dict(color='orange', width=2, dash='dash')
                 ))
             fig.update_layout(
-                title='Cumulative Return',
-                xaxis_title='Date',
-                yaxis_title='Cumulative Return',
+                title='累计收益曲线',
+                xaxis_title='日期',
+                yaxis_title='累计净值',
                 template='plotly_dark',
                 width=1280,
                 height=720,
@@ -131,9 +131,9 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                     opacity=0.8
                 ))
                 fig.update_layout(
-                    title='Prediction Distribution',
-                    xaxis_title='Score',
-                    yaxis_title='Count',
+                    title='预测得分分布',
+                    xaxis_title='预测得分',
+                    yaxis_title='频次',
                     template='plotly_dark',
                     width=1280,
                     height=720,
@@ -174,10 +174,12 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                     y=y,
                     colorscale='RdYlGn',
                     zmid=0,
-                    colorbar=dict(title='Return'),
+                    colorbar=dict(title=dict(text='收益率', side='right')),
                 ))
                 fig.update_layout(
-                    title='Monthly Returns Heatmap',
+                    title='月度收益热力图',
+                    xaxis_title='月份',
+                    yaxis_title='年份',
                     template='plotly_dark',
                     width=1280,
                     height=600,
@@ -205,13 +207,13 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                 y=_to_list(drawdown),
                 mode='lines',
                 fill='tozeroy',
-                name='Drawdown',
+                name='回撤',
                 line=dict(color='crimson', width=1)
             ))
             fig.update_layout(
-                title='Drawdown',
-                xaxis_title='Date',
-                yaxis_title='Drawdown',
+                title='最大回撤曲线',
+                xaxis_title='日期',
+                yaxis_title='回撤幅度',
                 template='plotly_dark',
                 width=1280,
                 height=720,
@@ -237,14 +239,14 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                     x=list(rolling_sharpe.index.astype(str)),
                     y=_to_list(rolling_sharpe),
                     mode='lines',
-                    name='Rolling Sharpe (60d)',
+                    name='滚动夏普比率(60日)',
                     line=dict(color='limegreen', width=2)
                 ))
                 fig.add_hline(y=0, line_dash="dash", line_color="gray")
                 fig.update_layout(
-                    title='Rolling Sharpe Ratio (60-day)',
-                    xaxis_title='Date',
-                    yaxis_title='Sharpe',
+                    title='滚动夏普比率（60日窗口）',
+                    xaxis_title='日期',
+                    yaxis_title='夏普比率',
                     template='plotly_dark',
                     width=1280,
                     height=720,
@@ -571,3 +573,178 @@ def save_stock_picks_to_file(picks_df, output_dir: str = "output/picks", date_st
         logger.warning("保存配置快照失败: %s", e)
 
     return str(csv_file), str(meta_file)
+
+
+def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
+                       init_cash: float = 100000000, report_normal_df=None,
+                       output_dir: str = "output/trades"):
+    """
+    从预测信号中还原每日买卖点记录并保存为 CSV。
+
+    基于 Qlib TopkDropoutStrategy 的逻辑：
+      - 每天持有 topk 只预测得分最高的股票，等权分配
+      - 每期最多替换 n_drop 只（优先卖出不在新 topk 中的旧持仓）
+      - 每只股票仓位 = 当日组合总资产 / topk
+
+    输出两个文件:
+      1. output/trades/trade_records.csv - 买卖动作 (date, action, stock_code, amount, score)
+      2. output/trades/daily_holdings.csv - 每日持仓快照 (date, rank, stock_code, position_value, weight, score, is_new)
+
+    Args:
+        pred_df: 预测 DataFrame（MultiIndex: datetime, instrument; Column: score）
+        topk: 每期持有数量
+        n_drop: 每期最大替换数
+        init_cash: 初始资金
+        report_normal_df: 日度回测报告（含 portfolio value，用于计算真实仓位金额）
+        output_dir: 输出目录
+
+    Returns:
+        Path to saved trade records CSV, or None on failure
+    """
+    if pred_df is None or pred_df.empty:
+        logger.warning("无预测数据，无法生成买卖记录")
+        return None
+
+    try:
+        dates = sorted(pred_df.index.get_level_values(0).unique())
+        if len(dates) < 1:
+            logger.warning("交易日不足，无法生成买卖记录")
+            return None
+
+        # 获取每日组合总资产（从回测报告中提取）
+        portfolio_values = {}
+        if report_normal_df is not None and not report_normal_df.empty:
+            try:
+                ret_col = _extract_series(report_normal_df, "return")
+                if ret_col is not None and len(ret_col) > 0:
+                    cum_ret = (1 + ret_col).cumprod()
+                    for d in cum_ret.index:
+                        date_str = pd.Timestamp(d).strftime("%Y-%m-%d")
+                        if date_str in [pd.Timestamp(dt).strftime("%Y-%m-%d") for dt in dates]:
+                            portfolio_values[date_str] = init_cash * float(cum_ret.loc[d])
+            except Exception:
+                pass
+        if not portfolio_values:
+            for d in dates:
+                portfolio_values[pd.Timestamp(d).strftime("%Y-%m-%d")] = init_cash
+
+        trade_records = []
+        holding_records = []
+        prev_holdings = set()
+
+        for i, date in enumerate(dates):
+            date_str = pd.Timestamp(date).strftime("%Y-%m-%d")
+            daily = pred_df.loc[date]
+            if isinstance(daily, pd.Series):
+                daily = daily.to_frame("score")
+
+            topk_stocks = daily["score"].sort_values(ascending=False).head(topk)
+            new_topk_set = set(topk_stocks.index)
+            n_hold = min(topk, len(topk_stocks))
+            pv = portfolio_values.get(date_str, init_cash)
+            per_stock_value = pv / n_hold if n_hold > 0 else 0
+            weight = 1.0 / n_hold if n_hold > 0 else 0
+
+            if i == 0:
+                for rank, (stock, score) in enumerate(topk_stocks.items(), 1):
+                    trade_records.append({
+                        "date": date_str,
+                        "action": "BUY",
+                        "stock_code": str(stock).replace("SH", "").replace("SZ", ""),
+                        "amount": round(per_stock_value, 2),
+                        "score": round(float(score), 6),
+                    })
+                    holding_records.append({
+                        "date": date_str,
+                        "rank": rank,
+                        "stock_code": str(stock).replace("SH", "").replace("SZ", ""),
+                        "position_value": round(per_stock_value, 2),
+                        "weight": round(weight, 4),
+                        "score": round(float(score), 6),
+                        "is_new": 1,
+                    })
+                prev_holdings = set(topk_stocks.index)
+            else:
+                to_sell = prev_holdings - new_topk_set
+                to_sell_scores = {s: daily.loc[s, "score"] if s in daily.index else -999 for s in to_sell}
+                to_sell_ordered = sorted(to_sell, key=lambda s: to_sell_scores[s])[:n_drop]
+
+                to_buy_candidates = new_topk_set - prev_holdings
+                n_replace = min(len(to_sell_ordered), len(to_buy_candidates))
+                to_buy = list(to_buy_candidates)[:n_replace]
+
+                for stock in to_sell_ordered:
+                    if stock in prev_holdings:
+                        trade_records.append({
+                            "date": date_str,
+                            "action": "SELL",
+                            "stock_code": str(stock).replace("SH", "").replace("SZ", ""),
+                            "amount": round(per_stock_value, 2),
+                            "score": round(float(daily.loc[stock, "score"]) if stock in daily.index else 0, 6),
+                        })
+
+                for stock in to_buy:
+                    trade_records.append({
+                        "date": date_str,
+                        "action": "BUY",
+                        "stock_code": str(stock).replace("SH", "").replace("SZ", ""),
+                        "amount": round(per_stock_value, 2),
+                        "score": round(float(daily.loc[stock, "score"]), 6),
+                    })
+
+                prev_holdings = (prev_holdings - set(to_sell_ordered)) | set(to_buy)
+
+                for rank, (stock, score) in enumerate(topk_stocks.items(), 1):
+                    is_new = 1 if stock in (set(to_buy) & new_topk_set) else 0
+                    holding_records.append({
+                        "date": date_str,
+                        "rank": rank,
+                        "stock_code": str(stock).replace("SH", "").replace("SZ", ""),
+                        "position_value": round(per_stock_value, 2),
+                        "weight": round(weight, 4),
+                        "score": round(float(score), 6),
+                        "is_new": is_new,
+                    })
+
+        # 保存买卖记录
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        if trade_records:
+            trade_df = pd.DataFrame(trade_records)
+            trade_df = trade_df.sort_values(["date", "action"]).reset_index(drop=True)
+            csv_file = out_path / "trade_records.csv"
+            trade_df.to_csv(csv_file, index=False, encoding="utf-8-sig")
+            logger.info("买卖记录已保存: %s (%d 条)", csv_file, len(trade_df))
+        else:
+            logger.warning("回测期间无买卖记录")
+            csv_file = None
+
+        if holding_records:
+            holding_df = pd.DataFrame(holding_records)
+            holding_df = holding_df.sort_values(["date", "rank"]).reset_index(drop=True)
+            holding_file = out_path / "daily_holdings.csv"
+            holding_df.to_csv(holding_file, index=False, encoding="utf-8-sig")
+            logger.info("每日持仓快照已保存: %s (%d 条)", holding_file, len(holding_df))
+
+        if trade_records:
+            buy_count = sum(1 for r in trade_records if r["action"] == "BUY")
+            sell_count = sum(1 for r in trade_records if r["action"] == "SELL")
+            total_buy = sum(r["amount"] for r in trade_records if r["action"] == "BUY")
+            total_sell = sum(r["amount"] for r in trade_records if r["action"] == "SELL")
+        else:
+            buy_count = sell_count = 0
+            total_buy = total_sell = 0
+        holding_total = len(holding_records)
+
+        print(f"\n[买卖交易与持仓摘要]")
+        print(f"  回测交易日数: {len(dates)}")
+        print(f"  买入交易: {buy_count} 次 (合计 {total_buy:,.0f} 元) | 卖出交易: {sell_count} 次 (合计 {total_sell:,.0f} 元)")
+        print(f"  每日持仓快照: {holding_total} 条 (每个交易日 {topk} 只股票)")
+        print(f"  已保存到目录: {out_path}")
+
+        return str(csv_file) if csv_file else None
+
+    except Exception as e:
+        logger.error("生成买卖记录失败: %s", e)
+        return None
