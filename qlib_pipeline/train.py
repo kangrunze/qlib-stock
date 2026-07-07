@@ -175,7 +175,7 @@ def run_prediction(model, dataset, experiment_name: str = "qlib_pred",
     logger.info("运行预测...")
     with R.start(experiment_name=experiment_name):
         if train_rid:
-            recorder = R.get_recorder(recorder_id=train_rid)
+            recorder = R.get_recorder(recorder_id=train_rid, experiment_name=experiment_name)
             model = recorder.load_object("trained_model")
         recorder = R.get_recorder()
         sr = SignalRecord(model, dataset, recorder)

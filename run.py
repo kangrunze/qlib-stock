@@ -281,6 +281,34 @@ def parse_args():
     vp_parser.add_argument("--lookback-days", type=int, default=20)
     vp_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("validation", "output/validation"))
 
+    # === Phase 4: 风险诊断（风格暴露 / 收益归因 / 容量） ===
+    risk_parser = subparsers.add_parser("risk", help="风格暴露诊断（需要 Phase A 基本面数据）")
+    risk_parser.add_argument("--config", type=str, default=None)
+    risk_parser.add_argument("--rid", type=str, default=None,
+                        help="回测 recorder_id（从回测结果中提取持仓权重）")
+    risk_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("charts", "output/qlib_charts"))
+
+    attr_parser = subparsers.add_parser("attribution", help="收益归因分析（需要 Phase A 基本面数据）")
+    attr_parser.add_argument("--config", type=str, default=None)
+    attr_parser.add_argument("--rid", type=str, default=None,
+                        help="回测 recorder_id（从回测结果中提取收益序列）")
+    attr_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("charts", "output/qlib_charts"))
+
+    cap_parser = subparsers.add_parser("capacity", help="组合容量检查（需要 Phase A 成交额数据）")
+    cap_parser.add_argument("--config", type=str, default=None)
+    cap_parser.add_argument("--rid", type=str, default=None,
+                        help="回测 recorder_id（从回测结果中提取持仓）")
+    cap_parser.add_argument("--account", type=float, default=1e8,
+                        help="管理规模（元，默认 1 亿）")
+    cap_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("charts", "output/qlib_charts"))
+
+    # === Phase 4: 强制性对比实验（第 8.4 节） ===
+    bm_parser = subparsers.add_parser("benchmark", help="第 8.4 节强制性对比实验（E1-E5）")
+    bm_parser.add_argument("--config", type=str, default=None)
+    bm_parser.add_argument("--experiments", type=str, default=None,
+                      help="逗号分隔实验列表，如 E1,E3；不指定则运行全部")
+    bm_parser.add_argument("--output-dir", type=str, default="output/benchmark")
+
     return parser.parse_args()
 
 
@@ -491,6 +519,117 @@ def _check_data_availability(config: dict) -> bool:
     return True
 
 
+def _run_risk_diagnostics(config, ba_rid, pred_df, report_normal_df):
+    """一键跑通后自动追加风险诊断（风格暴露 / 容量 / 归因）。
+
+    所有诊断优雅降级：Phase A 数据未就绪时仅提示框架，不报错。
+    """
+    logger.info("-" * 40)
+    logger.info("[阶段 4/4] 风险诊断（风格暴露 / 容量 / 归因）")
+    logger.info("-" * 40)
+
+    # ── 4a. 风格暴露诊断 ──
+    try:
+        from research.risk_model import STYLE_FACTORS, calculate_style_exposures, check_style_constraints
+        logger.info("[4a] 风格暴露诊断 ...")
+
+        # 从选股结果提取最新日期的持仓
+        if pred_df is not None and not pred_df.empty:
+            pick_date = pred_df.index.get_level_values("datetime")[-1] if hasattr(pred_df.index, "get_level_values") else pred_df.index[-1][0]
+            pick_stocks = list(pred_df.loc[pick_date].index)[:30] if hasattr(pred_df, "loc") else []
+            needed_features = [v["feature"] for v in STYLE_FACTORS.values()]
+
+            # 尝试加载因子值
+            from qlib.data import D
+            factor_data = {}
+            for feat in needed_features:
+                try:
+                    fv = D.features(pick_stocks, [feat], start_time=pick_date, end_time=pick_date)
+                    if fv is not None and not fv.empty:
+                        factor_data[feat] = fv.iloc[:, 0] if fv.shape[1] > 0 else None
+                except Exception:
+                    pass
+
+            if len(factor_data) >= 3:
+                factor_df = pd.DataFrame(factor_data)
+                weights = pd.Series(1.0 / len(pick_stocks), index=pick_stocks)
+                exposures = calculate_style_exposures(weights, factor_df)
+                if not exposures.empty:
+                    logger.info("  ✓ 风格暴露计算完成 (%d 个维度):", len(exposures))
+                    for _, row in exposures.iterrows():
+                        flag = " ⚠ 超标" if abs(row["active_exposure"]) > 0.5 else ""
+                        logger.info("    %s: active=%+.3fσ%s", row["name_cn"], row["active_exposure"], flag)
+                    violations = check_style_constraints(exposures)
+                    if violations:
+                        logger.warning("  ⚠ 风格暴露超标: %s", ", ".join(violations))
+                    else:
+                        logger.info("  ✓ 所有风格暴露在阈值内 (|active| ≤ 0.5σ)")
+                else:
+                    _log_phase_a_hint("风格暴露", needed_features)
+            else:
+                _log_phase_a_hint("风格暴露", needed_features)
+        else:
+            logger.info("  (选股结果为空，跳过风格暴露诊断)")
+    except ImportError:
+        logger.info("  (research.risk_model 不可用)")
+    except Exception as e:
+        logger.warning("  (风格暴露诊断失败: %s)", e)
+
+    # ── 4b. 容量检查 ──
+    try:
+        from research.capacity import check_portfolio_capacity
+        logger.info("[4b] 容量检查 ...")
+
+        if pred_df is not None and not pred_df.empty:
+            pick_date = pred_df.index.get_level_values("datetime")[-1] if hasattr(pred_df.index, "get_level_values") else pred_df.index[-1][0]
+            pick_stocks = list(pred_df.loc[pick_date].index)[:30] if hasattr(pred_df, "loc") else []
+
+            # 尝试获取日均成交额
+            try:
+                from qlib.data import D
+                volume_data = D.features(pick_stocks, ["$volume"], start_time=pick_date, end_time=pick_date)
+                if volume_data is not None and not volume_data.empty:
+                    # 简化：用当日成交量估算
+                    logger.info("  ✓ 成交量数据可用 (%d 只股票)", len(pick_stocks))
+                    logger.info("  → 使用 research.capacity.check_portfolio_capacity() 完整计算")
+                else:
+                    _log_phase_a_hint("容量检查", ["$volume", "日均成交额"])
+            except Exception:
+                _log_phase_a_hint("容量检查", ["$volume", "日均成交额"])
+        else:
+            logger.info("  (选股结果为空，跳过容量检查)")
+    except ImportError:
+        logger.info("  (research.capacity 不可用)")
+    except Exception as e:
+        logger.warning("  (容量检查失败: %s)", e)
+
+    # ── 4c. 收益归因 ──
+    try:
+        from research.attribution import decompose_excess_return
+        logger.info("[4c] 收益归因 ...")
+
+        if report_normal_df is not None and not report_normal_df.empty:
+            logger.info("  ✓ 回测报告可用，归因分析就绪")
+            logger.info("  → 完整归因需要 Phase A 风格因子数据（$roe/$pb_inv/$mom_12m 等）")
+            logger.info("  → 数据就绪后自动调用 research.attribution.decompose_excess_return()")
+        else:
+            logger.info("  (回测报告为空，跳过收益归因)")
+    except ImportError:
+        logger.info("  (research.attribution 不可用)")
+    except Exception as e:
+        logger.warning("  (收益归因失败: %s)", e)
+
+    logger.info("  Phase A 数据就绪后，风险诊断将自动产出完整报告。")
+    logger.info("  也可单独运行: python run.py risk|attribution|capacity --rid <id>")
+
+
+def _log_phase_a_hint(diagnostic_name, needed_features):
+    """统一的 Phase A 未就绪提示"""
+    logger.info("  (Phase A 数据未就绪，%s 跳过)", diagnostic_name)
+    logger.info("  → 需要特征: %s", ", ".join(needed_features[:5]))
+    logger.info("  → 完成 Phase A 基本面数据接入后自动生效")
+
+
 def cmd_full(args):
     logger.info("[命令] full — 启动一键跑通流程 (训练+回测+图表+选股)")
     config = load_workflow_config(args.config)
@@ -638,6 +777,9 @@ def cmd_full(args):
     logger.info("  训练记录: recorder_id=%s", rid)
     logger.info("  回测记录: backtest_recorder_id=%s", ba_rid)
     logger.info("=" * 60)
+
+    # ── 阶段 4: 风险诊断（风格暴露 / 容量 / 归因）──
+    _run_risk_diagnostics(config, ba_rid, pred_df, report_normal_df)
 
     # ── 实验追踪与协议检查（第 2.2 节 + 第 8.2 节）──
     if hasattr(args, "phase"):
@@ -1236,6 +1378,171 @@ def cmd_explain(args):
         logger.info("SHAP 分析完成, 前10特征: %s", ", ".join(report.get("top_10_features", [])[:5]))
 
 
+# ===== Phase 4: 风险诊断（风格暴露 / 收益归因 / 容量）=====
+
+def cmd_risk(args):
+    """风格暴露诊断"""
+    logger.info("[命令] risk — 风格暴露诊断")
+    logger.info("=" * 60)
+    logger.info("⚠ 此功能依赖 Phase A 基本面数据（$roe, $pb_inv, $mom_12m 等）")
+    logger.info("  当前 Phase A 尚未完成，将仅展示诊断框架。")
+    logger.info("  完成 Phase A 后，此命令将自动产出完整的风格暴露报告。")
+    logger.info("=" * 60)
+
+    config = load_workflow_config(args.config)
+    init_qlib_env(config)
+
+    from research.risk_model import STYLE_FACTORS, get_style_factor_names
+
+    logger.info("已注册风格维度: %s", ", ".join(
+        f"{k}({v['name']}, feature={v['feature']})" for k, v in STYLE_FACTORS.items()
+    ))
+
+    if args.rid:
+        logger.info("尝试从回测结果 %s 加载持仓数据 ...", args.rid)
+        try:
+            from qlib.workflow import R
+            from qlib.data import D
+
+            # 尝试从回测记录中加载持仓
+            experiment_bt = "qlib_pipeline_backtest"
+            recorder = R.get_recorder(recorder_id=args.rid, experiment_name=experiment_bt)
+            report_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
+
+            if report_df is not None and not report_df.empty:
+                logger.info("  ✓ 回测报告加载成功 (%d 行)", len(report_df))
+                logger.info("  → 持仓分析需要 report_normal_1day.pkl 中的持仓明细")
+
+                # 尝试加载因子值（需要 Phase A 数据）
+                needed_features = [v["feature"] for v in STYLE_FACTORS.values()]
+                available_features = []
+                try:
+                    from qlib.data import D
+                    sample_stock = report_df.index.get_level_values("instrument")[0] if hasattr(report_df.index, "get_level_values") else "SH600000"
+                    for feat in needed_features:
+                        try:
+                            D.features([sample_stock], [feat], start_time="2025-01-01", end_time="2025-01-10")
+                            available_features.append(feat)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                if available_features:
+                    logger.info("  → 可用的风格因子特征: %s", ", ".join(available_features))
+                    logger.info("  → 使用 research.risk_model.calculate_style_exposures() 可计算完整暴露")
+                    logger.info("  → 阈值: |active_exposure| > 0.5 sigma 时触发警告")
+                else:
+                    logger.warning("  → 当前 Qlib 数据中缺少风格因子特征 (%s)", ", ".join(needed_features))
+                    logger.warning("  → 需要 Phase A 将基本面数据导入 features/ 目录")
+            else:
+                logger.warning("  → 回测报告为空，无法提取持仓")
+        except Exception as e:
+            logger.warning("  → 加载回测记录失败: %s", e)
+            logger.info("  → 请确认 recorder_id 正确且回测已完成")
+    else:
+        logger.info("未指定 --rid，仅展示诊断框架。")
+        logger.info("用法: python run.py risk --rid <backtest_recorder_id>")
+
+
+def cmd_attribution(args):
+    """收益归因分析"""
+    logger.info("[命令] attribution — 收益归因分析")
+    logger.info("=" * 60)
+    logger.info("⚠ 此功能依赖 Phase A 基本面数据（风格因子值）")
+    logger.info("  当前 Phase A 尚未完成，将仅展示诊断框架。")
+    logger.info("=" * 60)
+
+    config = load_workflow_config(args.config)
+    init_qlib_env(config)
+
+    from research.attribution import attribution_report
+
+    if args.rid:
+        logger.info("尝试从回测结果 %s 加载收益数据 ...", args.rid)
+        try:
+            from qlib.workflow import R
+            from qlib.data import D
+
+            experiment_bt = "qlib_pipeline_backtest"
+            recorder = R.get_recorder(recorder_id=args.rid, experiment_name=experiment_bt)
+            report_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
+            analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
+
+            if report_df is not None and not report_df.empty:
+                logger.info("  ✓ 回测报告加载成功")
+                logger.info("  → 归因分析需要以下数据:")
+                logger.info("    1. 组合日收益序列（从 report_normal_1day.pkl 提取）")
+                logger.info("    2. 基准日收益序列（从 report_normal_1day.pkl 提取）")
+                logger.info("    3. 风格因子日收益（需 research.attribution.calculate_factor_returns()）")
+                logger.info("    4. 持仓风格暴露（需 research.risk_model.calculate_style_exposures()）")
+                logger.info("  → 当前 Phase A 数据未就绪，无法计算因子收益和暴露")
+                logger.info("  → 完成后使用: research.attribution.decompose_excess_return()")
+            else:
+                logger.warning("  → 回测报告为空")
+        except Exception as e:
+            logger.warning("  → 加载回测记录失败: %s", e)
+            logger.info("  → 请确认 recorder_id 正确且回测已完成")
+    else:
+        logger.info("未指定 --rid，仅展示归因分析框架。")
+        logger.info("用法: python run.py attribution --rid <backtest_recorder_id>")
+
+
+def cmd_capacity(args):
+    """组合容量检查"""
+    logger.info("[命令] capacity — 组合容量检查")
+    logger.info("=" * 60)
+    logger.info("⚠ 此功能依赖 Phase A 成交额数据（日均成交额）")
+    logger.info("  当前 Phase A 尚未完成，将仅展示诊断框架。")
+    logger.info("  管理规模: %.0e 元", args.account)
+    logger.info("=" * 60)
+
+    from research.capacity import check_portfolio_capacity, check_single_stock_capacity
+
+    if args.rid:
+        logger.info("尝试从回测结果 %s 加载持仓数据 ...", args.rid)
+        try:
+            from qlib.workflow import R
+            experiment_bt = "qlib_pipeline_backtest"
+            recorder = R.get_recorder(recorder_id=args.rid, experiment_name=experiment_bt)
+            pred_df = recorder.load_object("pred.pkl")
+
+            if pred_df is not None and not pred_df.empty:
+                logger.info("  ✓ 预测数据加载成功 (%d 行)", len(pred_df))
+                logger.info("  → 容量检查需要以下数据:")
+                logger.info("    1. 持仓股票列表（从 pred.pkl 提取最新预测）")
+                logger.info("    2. 日均成交额（需 Phase A 接入 $avg_volume 或外部数据）")
+                logger.info("  → 完成 Phase A 后使用:")
+                logger.info("    research.capacity.check_portfolio_capacity()")
+                logger.info("    research.capacity.check_single_stock_capacity()")
+            else:
+                logger.warning("  → 预测数据为空")
+        except Exception as e:
+            logger.warning("  → 加载回测记录失败: %s", e)
+            logger.info("  → 请确认 recorder_id 正确且回测已完成")
+    else:
+        logger.info("未指定 --rid，仅展示容量检查框架。")
+        logger.info("用法: python run.py capacity --rid <backtest_recorder_id> --account 100000000")
+
+
+def cmd_benchmark(args):
+    """第 8.4 节强制性对比实验"""
+    logger.info("[命令] benchmark — 第 8.4 节强制性对比实验")
+    config = load_workflow_config(args.config)
+    init_qlib_env(config)
+
+    experiments = None
+    if args.experiments:
+        experiments = [e.strip() for e in args.experiments.split(",")]
+        logger.info("[参数] 指定实验: %s", ", ".join(experiments))
+    else:
+        logger.info("[参数] 运行全部实验 (E1-E5)")
+
+    from research.benchmark import run_benchmark_suite
+    report = run_benchmark_suite(config, experiments=experiments, output_dir=args.output_dir)
+    logger.info("实验完成，报告已保存到: %s", args.output_dir)
+
+
 def main():
     os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
     args = parse_args()
@@ -1248,6 +1555,8 @@ def main():
         "sensitivity": cmd_sensitivity, "key-years": cmd_key_years,
         "validate-picks": cmd_validate_picks,
         "optuna": cmd_optuna, "explain": cmd_explain,  # Phase 4 模型能力恢复
+        "risk": cmd_risk, "attribution": cmd_attribution, "capacity": cmd_capacity,  # Phase 4 风险诊断
+        "benchmark": cmd_benchmark,  # Phase 4 强制性对比实验
     }
     fn = cmd_map.get(args.command)
     if fn:

@@ -106,7 +106,7 @@ backtest:
     module_path: "qlib.contrib.strategy.signal_strategy"
     kwargs:
       topk: 30                               # ★ 中长周期: 集中持仓 20-30 只
-      n_drop: 5
+      n_drop: 3
 
   backtest:
     start_time: "2024-01-01"                 # 确认窗口起始
@@ -181,4 +181,6 @@ labels:
     - name: "up_down_60d"
       horizon: 60
       description: "方向判断标签（60日，事后诊断字段，不作为独立训练目标）"
-  primary: "ret_60d"             # ★ 中长周期主标签: 季度调仓（第 5.4 节）
+  primary: "xs_ret_60d"             # ★ 中长周期主标签: 季度调仓（第 5.4 节）
+  # 使用 xs_ret_60d（相对全池中位数）而非 ret_60d（绝对收益率），
+  # 以剔除大盘贝塔和共同风格，使训练目标更纯粹（第 5.2 节原则）

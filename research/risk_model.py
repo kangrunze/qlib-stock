@@ -9,8 +9,7 @@ Barra 风格因子暴露计算 — risk_model.py
   2. 风格维度：规模（Size）、估值（Value）、动量（Momentum）、波动率（Volatility）、质量（Quality）
   3. 监控：如果暴露绝对值超出预设阈值（±0.5 sigma）给出警告提示
 
-Reference:
-  - Cneaderland Barra 风格因子体系简化版
+参考 Barra Global Equity Model (GEM) 风格因子体系，本项目做简化实现。
   - Barra Global Equity Model (GEM)
 
 Usage:
@@ -65,7 +64,14 @@ def calculate_style_exposures(
     factor_values: pd.DataFrame,
     benchmark_weights: Optional[pd.Series] = None,
 ) -> pd.DataFrame:
-    """计算组合相对于基准的风格因子暴露。
+    """计算组合相对于基准的风格因子暴露（以截面标准差为单位）。
+
+    对每个风格因子做当日截面 z-score 标准化后，再计算组合与基准的加权暴露差，
+    使得 active_exposure 是真正"以标准差为单位"的暴露差异，可直接与阈值比较。
+
+    z-score 标准化:
+        z_i = (x_i - μ) / σ
+        其中 μ 和 σ 是当日所有股票在该因子上的截面均值和标准差。
 
     Args:
         portfolio_weights: 组合权重，index = stock_code, values = weight
@@ -74,8 +80,10 @@ def calculate_style_exposures(
             如果为 None，使用全市场平均（等权）作为基准
 
     Returns:
-        DataFrame, columns = ["name", "portfolio_exposure", "benchmark_exposure", "active_exposure"]
+        DataFrame, columns = ["name_cn", "portfolio_exposure", "benchmark_exposure",
+                              "active_exposure", "factor_mean", "factor_std"]
         index = 风格因子名称
+        active_exposure 以截面标准差为单位（z-score 差值）
     """
     result = []
 
@@ -89,26 +97,43 @@ def calculate_style_exposures(
     port_weights_norm = port_weights_aligned / port_weights_aligned.sum()
 
     for style_name, style_info in STYLE_FACTORS.items():
-        if style_info["feature"] not in factor_values.columns:
-            logger.warning("风格因子 %s 特征 %s 不存在，跳过", style_name, style_info["feature"])
+        feat = style_info["feature"]
+        if feat not in factor_values.columns:
+            logger.warning("风格因子 %s 特征 %s 不存在，跳过", style_name, feat)
             continue
 
-        fv = factor_values.loc[common_stocks, style_info["feature"]]
+        fv = factor_values.loc[common_stocks, feat].astype(float)
 
-        # 组合暴露 = 加权平均
-        port_exposure = (port_weights_norm * fv).sum()
+        # ── 截面 z-score 标准化 ──
+        # 去除 NaN 后计算截面均值和标准差
+        fv_clean = fv.dropna()
+        if len(fv_clean) < 10:
+            logger.warning("风格因子 %s 有效样本不足 (%d)，跳过", style_name, len(fv_clean))
+            continue
+
+        fv_mean = fv_clean.mean()
+        fv_std = fv_clean.std(ddof=1)  # 样本标准差
+        if fv_std < 1e-12:
+            logger.warning("风格因子 %s 截面标准差接近零，跳过标准化", style_name)
+            fv_z = pd.Series(0.0, index=fv.index)
+        else:
+            # z-score: (x - μ) / σ  → 以标准差为单位
+            fv_z = (fv - fv_mean) / fv_std
+
+        # 组合暴露 = 加权平均（z-score 单位）
+        port_exposure = (port_weights_norm * fv_z.loc[common_stocks]).sum()
 
         # 基准暴露
         if benchmark_weights is not None:
-            bench_common = benchmark_weights.index.intersection(fv.index)
+            bench_common = benchmark_weights.index.intersection(fv_z.index)
             if len(bench_common) > 0:
                 bench_weights_aligned = benchmark_weights.loc[bench_common]
                 bench_weights_norm = bench_weights_aligned / bench_weights_aligned.sum()
-                bench_exposure = (bench_weights_norm * fv.loc[bench_common]).sum()
+                bench_exposure = (bench_weights_norm * fv_z.loc[bench_common]).sum()
             else:
-                bench_exposure = fv.mean()
+                bench_exposure = fv_z.mean()
         else:
-            bench_exposure = fv.mean()
+            bench_exposure = fv_z.mean()
 
         active_exposure = port_exposure - bench_exposure
 
@@ -118,6 +143,8 @@ def calculate_style_exposures(
             "portfolio_exposure": port_exposure,
             "benchmark_exposure": bench_exposure,
             "active_exposure": active_exposure,
+            "factor_mean": fv_mean,   # 原始因子均值（供参考）
+            "factor_std": fv_std,     # 原始因子截面标准差（供参考）
         })
 
     return pd.DataFrame(result).set_index("style")

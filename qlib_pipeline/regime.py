@@ -161,7 +161,7 @@ def regime_analysis(ic_series: pd.Series,
         fig.write_image(str(output_path / "regime_analysis.png"), width=1280, height=1000, scale=2)
         logger.info("市场阶段分析图表已保存: regime_analysis.png")
     except Exception as e:
-        logger.warning("图表述成失败: %s", e)
+        logger.warning("图表生成失败: %s", e)
 
     logger.info("市场阶段分析完成: %d regimes", len(df))
     if not df.empty:
@@ -337,7 +337,7 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
                         recorder_id=rid,
                         test_data_range=(start, end),
                     )
-                except ImportError:
+                except Exception:
                     pass
 
                 results.append({

@@ -94,13 +94,14 @@ def calculate_factor_returns(
     对多日取均值即可得到因子风险溢价（Fama-MacBeth 第二步）。
 
     Args:
-        factor_values: 因子值，index = date, columns = factor
-            每个单元格为该日期/因子下各股票的因子暴露 Series（index=stock）
-        stock_returns: 股票收益，index = date, columns = stock
+        factor_values: 因子值 DataFrame，index = date, columns = 因子名称
+            每个单元格为该日期/因子下各股票的因子暴露 Series（index=stock_code）
+            示例: factor_values.loc["2025-01-01", "size"] → Series(index=stock, values=exposure)
+        stock_returns: 股票收益，index = date, columns = stock_code
         industry_map: 行业映射（可选，用于行业中性化）
 
     Returns:
-        pd.DataFrame, index = date, columns = factor, values = 因子日收益（OLS 回归系数）
+        pd.DataFrame, index = date, columns = 因子名称, values = 因子日收益（OLS 回归系数）
     """
     dates = stock_returns.index.intersection(factor_values.index.unique())
     factors = list(factor_values.columns)

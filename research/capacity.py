@@ -99,15 +99,13 @@ def check_portfolio_capacity(
 
 
 def get_average_volume_from_data(
-    returns_df: pd.DataFrame,
     volume_df: pd.DataFrame,
     window: int = 60,
 ) -> pd.Series:
     """从价量数据计算滚动日均成交额。
 
     Args:
-        returns_df: 日收益 DataFrame
-        volume_df: 日成交额 DataFrame（价格 × 成交量）
+        volume_df: 日成交额 DataFrame（价格 × 成交量），index = date, columns = stock_code
         window: 滚动窗口大小
 
     Returns:

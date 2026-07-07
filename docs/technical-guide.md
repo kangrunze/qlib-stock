@@ -1,6 +1,6 @@
 # 技术架构说明
 
-> 文档版本: v3.0  
+> 文档版本: v3.2  
 > 更新日期: 2026-07-06
 
 ---
@@ -25,7 +25,8 @@
 │  cmd_train │ cmd_full │ cmd_backtest │ cmd_pick │ cmd_data   │
 │  cmd_rolling│cmd_drift│ cmd_ic_stab │ cmd_tscv │ cmd_regime  │
 │  cmd_sensitivity│cmd_key_years│cmd_update│cmd_validate│      │
-│  cmd_optuna │ cmd_explain │                                  │
+│  cmd_optuna │ cmd_explain │ cmd_risk │ cmd_attribution │      │
+│  cmd_capacity │ cmd_benchmark │                                │
 ├─────────────────────────────────────────────────────────────┤
 │                    qlib_pipeline (核心管线)                    │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐  │
@@ -39,7 +40,7 @@
 │  ┌──────────────┐ ┌──────────────┐ ┌────────────────────┐  │
 │  │significance  │ │ risk_model   │ │   attribution      │  │
 │  │portfolio_    │ │ capacity     │ │ experiment_tracker │  │
-│  │constructor   │ │ explain      │ │                    │  │
+│  │constructor   │ │ explain      │ │   benchmark        │  │
 │  └──────────────┘ └──────────────┘ └────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │                      tuning (调参层)                          │
@@ -145,6 +146,8 @@ cmd_map = {
     "sensitivity": cmd_sensitivity, "key-years": cmd_key_years,
     "validate-picks": cmd_validate_picks,
     "optuna": cmd_optuna, "explain": cmd_explain,
+    "risk": cmd_risk, "attribution": cmd_attribution, "capacity": cmd_capacity,
+    "benchmark": cmd_benchmark,
 }
 ```
 
@@ -277,9 +280,20 @@ pred.pkl                    # 预测信号
 | Purged TSCV | 防泄露的时序交叉验证 | `tscv.py` |
 | 市场阶段分析 | 牛/熊/震荡市分阶段 IC | `regime.py` |
 | 敏感性分析 | 超参数对 IC 的影响 | `sensitivity.py` |
-| 关键年份回测 | 指定年份独立回测 | `regime.py:key_year_backtest()` |
+| 关键年份回测 | 指定年份独立回测（支持样本外模式） | `regime.py:key_year_backtest()` |
 
-### 6.3 cmd_regime 实现细节
+### 6.3 Phase 4 — 风险诊断与对比实验
+
+| 分析 | 指标 | 实现 |
+|------|------|------|
+| 风格暴露诊断 | Barra 5因子截面 z-score 暴露 | `risk_model.py` → `run.py risk` |
+| 收益归因 | Fama-MacBeth 截面 OLS 回归 | `attribution.py` → `run.py attribution` |
+| 容量检查 | 持仓占日均成交额比例 | `capacity.py` → `run.py capacity` |
+| 强制性对比实验 | E1-E7 全量对比 + NW 显著性 | `benchmark.py` → `run.py benchmark` |
+
+诊断模块在 `python run.py full` 结束时自动调用，数据就绪时自动计算，否则优雅降级。
+
+### 6.4 cmd_regime 实现细节
 
 市场阶段分析通过从 bin 文件直接读取基准股票价格数据，配合日历构造纯 DatetimeIndex 的 Series，避免 Qlib `D.features()` 返回 MultiIndex 导致的日期匹配问题。
 

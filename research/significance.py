@@ -247,11 +247,8 @@ def ic_significance_report(
     if result['significant']:
         lines.append("  ✓ 结论: IC 显著异于零，通过显著性检验")
     else:
-        lines.append(
-            f"  ✗ 结论: IC 未通过显著性检验 "
-            f"(|t_NW|={abs(result['t_nw']):.2f}" if result['t_nw'] is not None else ""
-            + ")，不纳入策略候选池"
-        )
+        tail = f"(|t_NW|={abs(result['t_nw']):.2f})，不纳入策略候选池" if result['t_nw'] is not None else ""
+        lines.append(f"  ✗ 结论: IC 未通过显著性检验 {tail}")
 
     lines.append("=" * 60)
     return "\n".join(lines)

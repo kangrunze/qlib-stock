@@ -55,8 +55,8 @@ def _init_qlib_once(config: dict):
 def _single_trial_ic(config: dict, trial_params: dict) -> Optional[float]:
     """单次 Optuna trial：训练模型并返回验证集 IC 均值。
 
-    内部使用与 run.py 一致的训练流程（train.py:build_task + LGBModel.fit），
-    确保搜索结果与正式训练可复现。
+    优先使用 rolling.py 的多折滚动平均 IC（第 7.3 节建议），
+    退化为单一切分 IC 均值（方差较大但可用）。
 
     Args:
         config: workflow config dict
@@ -103,13 +103,28 @@ def _single_trial_ic(config: dict, trial_params: dict) -> Optional[float]:
         model = init_instance_by_config(task["model"])
         model.fit(dataset)
 
-        # 在验证集上计算 IC
         from qlib_pipeline.ic_stability import get_ic_series
+
+        # 优先尝试 rolling 多折平均 IC（降低单一切分的方差）
+        try:
+            from qlib_pipeline.rolling import rolling_cross_validation
+            rolling_result = rolling_cross_validation(config, model=model, dataset=dataset)
+            if rolling_result and "fold_ics" in rolling_result and len(rolling_result["fold_ics"]) >= 3:
+                fold_ic_means = [fold["ic_mean"] for fold in rolling_result["fold_ics"] if fold.get("ic_mean") is not None]
+                if fold_ic_means:
+                    ic_mean = float(np.mean(fold_ic_means))
+                    logger.debug("Trial IC (rolling %d-fold): %.6f", len(fold_ic_means), ic_mean)
+                    return ic_mean
+        except Exception as e:
+            logger.debug("Rolling 多折 IC 不可用 (%s)，回退到单一切分", e)
+
+        # 退化：单一切分 IC 均值
         ic_series = get_ic_series(model, dataset)
         if len(ic_series) == 0:
             return None
 
         ic_mean = float(ic_series.mean())
+        logger.debug("Trial IC (single split): %.6f", ic_mean)
         return ic_mean
 
     except Exception as e:
@@ -120,10 +135,12 @@ def _single_trial_ic(config: dict, trial_params: dict) -> Optional[float]:
 def _objective(trial, config: dict, base_params: dict) -> float:
     """Optuna objective function: 最大化验证集 IC 均值。
 
-    搜索空间设计（参考 LightGBM 调参经验）：
+    搜索空间设计（第 7.3/C1 节收窄原则）：
+      中长周期因子数据信噪比低，过宽的树复杂度容易过拟合，
+      搜索空间严格收窄：
       - learning_rate: log-uniform, 0.01 ~ 0.2
-      - num_leaves: int, 31 ~ 511
-      - max_depth: int, 4 ~ 15
+      - num_leaves: int, 15 ~ 63（设计文档上限 63）
+      - max_depth: int, 3 ~ 6（设计文档上限 6）
       - subsample: uniform, 0.5 ~ 1.0
       - colsample_bytree: uniform, 0.5 ~ 1.0
       - lambda_l1: log-uniform, 1e-8 ~ 100
@@ -134,8 +151,8 @@ def _objective(trial, config: dict, base_params: dict) -> float:
 
     params = {
         "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-        "num_leaves": trial.suggest_int("num_leaves", 31, 511, step=16),
-        "max_depth": trial.suggest_int("max_depth", 4, 15),
+        "num_leaves": trial.suggest_int("num_leaves", 15, 63, step=4),
+        "max_depth": trial.suggest_int("max_depth", 3, 6),
         "subsample": trial.suggest_float("subsample", 0.5, 1.0),
         "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
         "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 100.0, log=True),

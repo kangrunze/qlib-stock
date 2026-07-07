@@ -344,12 +344,55 @@ def print_summary(report_normal_df, analysis_df, config: dict = None, picks_df =
         if picks_df is not None and not picks_df.empty:
             print("\n[风格暴露诊断]")
             try:
-                from research.risk_model import STYLE_FACTORS
+                from research.risk_model import STYLE_FACTORS, calculate_style_exposures, check_style_constraints
                 print(f"  可用风格维度: {', '.join(STYLE_FACTORS.keys())}")
-                print(f"  (风格暴露计算需要因子值数据，当前仅提供诊断框架)")
-                print(f"  → 使用 research.risk_model.calculate_style_exposures() 完整计算")
-                print(f"  → 检查阈值: |active_exposure| > 0.5 sigma 时触发警告")
-                print(f"  → 若某风格暴露绝对值持续偏高，策略可能是不自知的风格因子押注")
+
+                # 尝试获取因子值并进行实际计算
+                exposure_calculated = False
+                try:
+                    from qlib.data import D
+                    # 获取选股日期
+                    pick_date = picks_df.index.get_level_values("datetime")[-1] if hasattr(picks_df.index, "get_level_values") else picks_df.index[-1][0]
+                    pick_stocks = list(picks_df.loc[pick_date].index)[:30] if hasattr(picks_df, "loc") else list(picks_df.index.get_level_values("instrument"))[:30]
+                    needed_features = [v["feature"] for v in STYLE_FACTORS.values()]
+
+                    # 尝试加载因子值
+                    factor_data = {}
+                    for feat in needed_features:
+                        try:
+                            fv = D.features(pick_stocks, [feat], start_time=pick_date, end_time=pick_date)
+                            if fv is not None and not fv.empty:
+                                factor_data[feat] = fv.iloc[:, 0] if fv.shape[1] > 0 else None
+                        except Exception:
+                            pass
+
+                    if len(factor_data) >= 3:  # 至少有 3 个风格因子可用
+                        # 构建因子值 DataFrame
+                        import pandas as pd
+                        factor_df = pd.DataFrame(factor_data)
+                        # 构建等权组合权重
+                        weights = pd.Series(1.0 / len(pick_stocks), index=pick_stocks)
+                        exposures = calculate_style_exposures(weights, factor_df)
+                        if not exposures.empty:
+                            print(f"  ✓ 风格暴露计算完成（%d 个维度）" % len(exposures))
+                            for _, row in exposures.iterrows():
+                                flag = " ⚠" if abs(row["active_exposure"]) > 0.5 else ""
+                                print(f"    {row['name_cn']:6s}: active={row['active_exposure']:+.3f}σ (port={row['portfolio_exposure']:+.3f}σ, bench={row['benchmark_exposure']:+.3f}σ){flag}")
+
+                            # 检查是否超标
+                            violations = check_style_constraints(exposures)
+                            if violations:
+                                print(f"  ⚠ 风格暴露超标: {', '.join(violations)}")
+                            else:
+                                print(f"  ✓ 所有风格暴露在阈值内 (|active| ≤ 0.5σ)")
+                            exposure_calculated = True
+                except Exception as e:
+                    logger.debug("风格暴露自动计算失败: %s", e)
+
+                if not exposure_calculated:
+                    print(f"  (风格因子数据不可用，需 Phase A 接入 $roe/$pb_inv/$mom_12m 等基本面字段)")
+                    print(f"  → 接入后自动计算: research.risk_model.calculate_style_exposures()")
+                    print(f"  → 检查阈值: |active_exposure| > 0.5 sigma")
             except ImportError:
                 print("  (research.risk_model 不可用，无法进行风格暴露诊断)")
 

@@ -1,6 +1,6 @@
 # A股量化选股系统 — Qlib Pipeline
 
-基于 Microsoft Qlib 的 A 股量化选股系统，支持特征工程、多模型训练、回测分析、选股推荐和稳健性验证。
+基于 Microsoft Qlib 的 A 股量化选股系统，支持特征工程、多模型训练、回测分析、选股推荐、稳健性验证和风险诊断。
 
 ## 快速开始
 
@@ -12,7 +12,7 @@ pip install -r requirements.txt
 python run.py data --download
 python run.py data --convert
 
-# 3. 一键跑通：训练 + 回测 + 图表 + 选股
+# 3. 一键跑通：训练 + 回测 + 图表 + 选股 + 风险诊断
 python run.py full
 
 # 4. 每日增量更新
@@ -25,11 +25,13 @@ python run.py update
 |------|------|------|
 | 数据管理 | AKShare 下载 / CSV 转 Qlib bin / 增量更新 | `python run.py data` / `python run.py update` |
 | 模型训练 | Qlib LGBModel + Alpha158/360 | `python run.py train` |
-| 回测分析 | TopkDropoutStrategy + 图表生成 | `python run.py backtest --rid <ID>` |
+| 回测分析 | TopkDropoutStrategy + 图表生成 + 成本拖累拆解 + 风格暴露诊断 | `python run.py backtest --rid <ID>` |
 | 选股推荐 | Top-K 股票推荐 + 历史验证 | `python run.py pick` / `python run.py validate-picks` |
 | 稳健性验证 | Walk-Forward / IC 稳定性 / 特征漂移 | `python run.py rolling` / `python run.py ic-stability` / `python run.py drift` |
-| 鲁棒性深化 | TSCV / 市场阶段分析 / 敏感性分析 | `python run.py tscv` / `python run.py regime` / `python run.py sensitivity` |
+| 鲁棒性深化 | TSCV / 市场阶段分析 / 敏感性分析 / 关键年份回测 | `python run.py tscv` / `python run.py regime` / `python run.py sensitivity` / `python run.py key-years` |
 | 模型能力恢复 | Optuna 超参搜索 / SHAP 可解释性 | `python run.py optuna` / `python run.py explain` |
+| 风险诊断 | 风格暴露 / 收益归因 / 容量检查 | `python run.py risk` / `python run.py attribution` / `python run.py capacity` |
+| 对比实验 | 第 8.4 节强制性对比实验（E1-E7） | `python run.py benchmark` |
 
 ## 项目结构
 
@@ -39,7 +41,7 @@ qlib-stock/
 ├── config/
 │   └── settings.yaml            # 全局配置（数据路径、模型参数、策略等）
 ├── qlib_pipeline/
-│   ├── workflow_config.yaml     # Qlib 工作流配置（默认）
+│   ├── workflow_config.yaml     # Qlib 工作流配置（短周期默认）
 │   ├── workflow_config_longterm.yaml  # 中长周期配置
 │   ├── train.py                 # 训练管线
 │   ├── dataset.py               # 配置加载器
@@ -49,15 +51,19 @@ qlib-stock/
 │   ├── ic_stability.py          # IC 稳定性分析
 │   ├── tscv.py                  # 时序交叉验证
 │   ├── regime.py                # 市场阶段分析
-│   └── sensitivity.py           # 超参数敏感性
+│   ├── sensitivity.py           # 超参数敏感性
+│   ├── validate.py              # 选股验证
+│   ├── model.py                 # 模型构建
+│   └── numpy_compat.py          # NumPy 兼容补丁
 ├── research/                    # 研究分析模块
-│   ├── significance.py          # 统计显著性检验
-│   ├── risk_model.py            # 风险模型
-│   ├── attribution.py           # 收益归因
+│   ├── significance.py          # 统计显著性检验（Newey-West）
+│   ├── risk_model.py            # 风险模型（Barra 风格因子）
+│   ├── attribution.py           # 收益归因（Fama-MacBeth 截面回归）
 │   ├── portfolio_constructor.py # 行业中性化策略
 │   ├── capacity.py              # 策略容量分析
-│   ├── experiment_tracker.py    # 实验追踪
-│   └── explain.py               # SHAP 可解释性
+│   ├── experiment_tracker.py    # 实验追踪（探索/确认协议）
+│   ├── explain.py               # SHAP 可解释性
+│   └── benchmark.py             # 第 8.4 节强制性对比实验（E1-E7）
 ├── tuning/                      # 超参数搜索
 │   └── optuna_search.py         # Optuna 贝叶斯优化
 ├── data_center/                 # 数据层
@@ -77,8 +83,10 @@ qlib-stock/
     ├── rolling/                 # 滚动验证
     ├── tscv/                    # 交叉验证
     ├── sensitivity/             # 敏感性分析
+    ├── key_years/               # 关键年份回测
     ├── optuna/                  # 超参搜索结果
     ├── shap/                    # SHAP 分析报告
+    ├── benchmark/               # 对比实验报告
     └── validation/              # 选股验证
 ```
 
@@ -90,4 +98,4 @@ qlib-stock/
 
 ## 技术栈
 
-Python 3.10 · Qlib 0.9.7 · LightGBM · Pandas · NumPy 1.x · Plotly · AKShare
+Python 3.10 · Qlib 0.9.7 · LightGBM · Pandas · NumPy 1.x · Plotly · AKShare · Optuna

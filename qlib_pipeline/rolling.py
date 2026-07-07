@@ -16,7 +16,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import numpy as np
 import pandas as pd

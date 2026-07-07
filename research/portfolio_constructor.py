@@ -124,37 +124,57 @@ class IndustryConstrainedTopkStrategy(TopkDropoutStrategy if _HAS_QLIB_STRATEGY 
         return selected
 
     def generate_trade_decision(self, execute_result=None):
-        """生成交易决策，复用父类信号排序逻辑，在最终选股环节插入行业集中度检查。
+        """生成交易决策，在父类选股结果上插入行业集中度约束。
 
-        这是 Qlib TopkDropoutStrategy 的标准接口方法。
-        当行业映射可用时，对父类选出的股票进行行业约束过滤。
+        Qlib TopkDropoutStrategy.generate_trade_decision() 返回 TradeDecisionWO 对象，
+        内部包含 Order 列表（可通过 get_decision() 获取）。
+        本方法在父类结果基础上，对买入订单（BUY）应用行业约束过滤，
+        卖出订单（SELL）不受影响。
         """
         if not _HAS_QLIB_STRATEGY:
             logger.warning("Qlib TopkDropoutStrategy 不可用，行业约束策略无法在回测引擎中运行")
             return None
 
-        # 调用父类的 generate_trade_decision 获取基础信号排序
+        # 获取父类交易决策
         trade_decision = super().generate_trade_decision(execute_result)
 
-        # 如果没有行业映射，直接返回父类结果
-        if not self.industry_map:
+        # 没有行业映射或父类结果为空，直接返回
+        if not self.industry_map or trade_decision is None:
             return trade_decision
 
-        # 如果 trade_decision 包含股票列表，应用行业约束
-        # Qlib 的 trade_decision 格式通常是 OrderedDict，key 为 stock_code
-        if trade_decision is not None and hasattr(trade_decision, "__iter__"):
-            try:
-                stock_list = list(trade_decision.keys()) if hasattr(trade_decision, "keys") else list(trade_decision)
-                constrained = set(self._apply_industry_constraint(stock_list))
+        # TradeDecisionWO.empty() 检查是否为空决策
+        if hasattr(trade_decision, "empty") and trade_decision.empty():
+            return trade_decision
 
-                # 过滤掉不符合行业约束的股票
-                if hasattr(trade_decision, "keys"):
-                    filtered = {k: v for k, v in trade_decision.items() if k in constrained}
-                    return filtered
-            except Exception as e:
-                logger.warning("行业约束应用失败: %s，回退到父类结果", e)
+        # 提取订单列表 — TradeDecisionWO.get_decision() → List[Order]
+        order_list = trade_decision.get_decision()
+        if not order_list:
+            return trade_decision
 
-        return trade_decision
+        # 分离卖出和买入订单
+        from qlib.backtest.decision import Order
+        sell_orders = [o for o in order_list if o.direction == Order.SELL]
+        buy_orders = [o for o in order_list if o.direction == Order.BUY]
+
+        if not buy_orders:
+            return trade_decision
+
+        # 对买入订单的股票按行业约束过滤
+        # buy_orders 已按信号得分排序（父类保证），_apply_industry_constraint 依序纳入
+        buy_stocks = [o.stock_id for o in buy_orders]
+        constrained_stocks = set(self._apply_industry_constraint(buy_stocks))
+
+        filtered_buy = [o for o in buy_orders if o.stock_id in constrained_stocks]
+
+        if len(filtered_buy) < len(buy_orders):
+            logger.info(
+                "行业约束生效: 买入订单 %d → %d (过滤 %d 只)",
+                len(buy_orders), len(filtered_buy), len(buy_orders) - len(filtered_buy),
+            )
+
+        # 返回新的 TradeDecisionWO，卖出订单 + 过滤后的买入订单
+        from qlib.contrib.strategy.signal_strategy import TradeDecisionWO
+        return TradeDecisionWO(sell_orders + filtered_buy, self)
 
     def select_with_industry_constraint(
         self,

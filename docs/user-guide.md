@@ -1,6 +1,6 @@
 # 运行说明
 
-> 文档版本: v3.0  
+> 文档版本: v3.2  
 > 更新日期: 2026-07-06  
 > 适用项目: `d:/project/qlib-stock`
 
@@ -212,13 +212,41 @@ python run.py explain [--rid <id>]          # SHAP 可解释性分析
 | `optuna` | `--n-trials` 试算次数 / `--timeout` 超时秒数 | 贝叶斯超参数搜索 |
 | `explain` | `--rid` 模型记录ID / `--max-samples` | SHAP 特征重要性分析 |
 
-### 3.6 选股验证
+### 3.7 风险诊断（Phase 4 — 风格暴露 / 容量 / 归因）
 
 ```bash
-python run.py validate-picks --picks-dir output/picks --lookback-days 20
+python run.py risk --rid <backtest_recorder_id>        # 风格暴露诊断
+python run.py attribution --rid <backtest_recorder_id> # 收益归因分析
+python run.py capacity --rid <backtest_recorder_id> --account 100000000 # 组合容量检查
 ```
 
-读取历史选股推荐 CSV，用真实价格数据验证推荐股票的未来表现，输出命中率和各持有期收益。
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `risk` | `--rid` 回测记录 ID | 计算组合风格暴露，检查 |active_exposure| > 0.5σ 超标，优雅降级：Phase A 数据不可用时仅提示框架 |
+| `attribution` | `--rid` 回测记录 ID | Fama-MacBeth 收益归因分解，需要风格因子数据 |
+| `capacity` | `--rid` / `--account` 管理规模 | 容量约束检查，需要日均成交额数据 |
+
+在 `python run.py full` 结束时会自动调用风险诊断，数据就绪时自动计算，否则优雅降级。
+
+### 3.8 强制性对比实验（Phase 4 — 第 8.4 节）
+
+```bash
+python run.py benchmark                  # 运行全部对比实验（E1-E7）
+python run.py benchmark --experiments E1,E3,E6  # 仅运行指定实验
+python run.py benchmark --config qlib_pipeline/workflow_config_longterm.yaml  # 针对中长周期配置
+```
+
+| 实验 | 对比对象 | 判断标准 |
+|------|---------|------|
+| **E1** | Alpha158 vs Alpha360 | 哪个 IC 均值 Newey-West 显著更高 |
+| **E2** | loss=mse vs loss=rank | 哪个 IC 均值显著更高，同时比较换手率和夏普 |
+| **E3** | ret_20d vs ret_60d vs ret_120d | 哪个标签周期 ICIR 最高 |
+| **E4** | 因子中性化 vs 原始 | 中性化是否降低 IC 标准差 |
+| **E5** | 单模型 vs 时间维度集成 | 集成是否降低 IC 方差 |
+| **E6** | ret_60d vs xs_ret_60d | primary 标签用绝对收益还是相对全池超额收益（第 2.5 节定案） |
+| **E7** | up_down_60d 方向诊断 | 计算模型方向判断准确率，回答"是否能判断涨跌" |
+
+所有实验结果会输出摘要结论，并保存到 `output/benchmark/benchmark_report.json`。
 
 ---
 
@@ -337,4 +365,8 @@ python run.py key-years
 python run.py validate-picks
 python run.py optuna --n-trials 100
 python run.py explain
+python run.py risk --rid <id>
+python run.py attribution --rid <id>
+python run.py capacity --rid <id>
+python run.py benchmark --experiments E1,E6
 ```

@@ -1,6 +1,6 @@
 # 配置参考
 
-> 文档版本: v3.1  
+> 文档版本: v3.2  
 > 更新日期: 2026-07-06
 
 ---
@@ -56,6 +56,7 @@ output:
   sensitivity: "output/sensitivity"
   key_years: "output/key_years"
   validation: "output/validation"
+  benchmark: "output/benchmark"
 ```
 
 所有命令的 `--output-dir` 默认值均从此处读取，可通过命令行参数覆盖。
