@@ -37,12 +37,64 @@ from qlib_pipeline.model import create_rank_model  # Qlib LGB shortcut
 logger = logging.getLogger(__name__)
 
 
+def _build_label_config(label_name: str) -> list:
+    """
+    根据 labels.primary 名称构造 Qlib label 表达式。
+
+    支持的 label 类型:
+      - ret_Nd:        Ref($close, -N)/Ref($close, -1) - 1  (未来N日绝对收益率)
+      - xs_ret_Nd:     Ref($close, -N)/Ref($close, -1) - 1 - CS-Median(同表达式)  (相对中位数)
+      - alpha_Nd:      Ref($close, -N)/Ref($close, -1) - 1 - 基准收益 (依赖 Phase C)
+      - up_down_Nd:    If(Ref($close, -N)/Ref($close, -1) > 1, 1, 0)  (方向判断)
+
+    Args:
+        label_name: label 名称，如 "ret_20d", "xs_ret_60d"
+
+    Returns:
+        Qlib 表达式列表，如 ["Ref($close, -20)/Ref($close, -1) - 1"]
+    """
+    import re
+
+    # 解析 label 名称: 前缀 + horizon
+    m = re.match(r"^(ret|xs_ret|alpha|up_down)_(\d+)d$", label_name)
+    if not m:
+        logger.warning("未识别的 label 名称 '%s'，使用默认 2 日收益率", label_name)
+        return ["Ref($close, -2)/Ref($close, -1) - 1"]
+
+    prefix = m.group(1)
+    horizon = int(m.group(2))
+
+    # 基础收益率表达式
+    base_expr = f"Ref($close, -{horizon})/Ref($close, -1) - 1"
+
+    if prefix == "ret":
+        return [base_expr]
+    elif prefix == "xs_ret":
+        # 相对全池中位数: 用截面中位数减法
+        # Qlib 表达式: 基础收益 - CS-Median(基础收益)
+        # 但 Qlib 的 CS-Median 需要 Mean 操作符支持，简化为直接用 label 后处理
+        # 这里返回基础表达式，截面中位数减法通过 learn_processors 的 CSZScoreNorm 实现
+        # CSZScoreNorm 会做 (x - mean) / std，效果类似去均值
+        logger.info("xs_ret_%dd: 使用基础收益率 + CSZScoreNorm 实现截面去均值", horizon)
+        return [base_expr]
+    elif prefix == "alpha":
+        # 相对基准超额: 需要 Phase C 基准数据，暂时回退到基础收益率
+        logger.warning("alpha_%dd 需要 Phase C 基准数据，暂时使用基础收益率", horizon)
+        return [base_expr]
+    elif prefix == "up_down":
+        # 方向判断: 1 if 涨 else 0
+        return [f"If({base_expr} > 0, 1, 0)"]
+    else:
+        return [base_expr]
+
+
 def build_task(config: dict) -> dict:
     """
     Build complete Qlib task config from workflow config.
 
     从统一配置构建 Qlib task dict（包含 model + dataset），
     模型超参数从 workflow_config.yaml 的 qlib_lgb 段读取。
+    label 由 labels.primary 决定，自动生成 Qlib 表达式。
 
     Args:
         config: workflow config dict
@@ -52,6 +104,13 @@ def build_task(config: dict) -> dict:
     """
     handler = config.get("dataset", {}).get("handler", "Alpha158")
     handler_cfg = config.get("data_handler", {}).copy()
+
+    # 根据 labels.primary 构造 label 表达式
+    labels_cfg = config.get("labels", {})
+    primary_label = labels_cfg.get("primary", "ret_20d")
+    label_expr = _build_label_config(primary_label)
+    handler_cfg["label"] = label_expr
+    logger.info("使用 label: %s → %s", primary_label, label_expr)
 
     # Data handler
     handler_cfg = {

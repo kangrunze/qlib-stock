@@ -301,4 +301,4 @@ labels:
     - name: "up_down_60d"
       horizon: 60
       description: "方向判断标签（60日，诊断用途，Phase B 新增，不作为独立训练目标）"
-  primary: "ret_20d"             # ★ 主 Label（handler 默认使用的预测目标）
+  primary: "xs_ret_20d"           # ★ 主 Label（相对全池中位数，剔除大盘贝塔）

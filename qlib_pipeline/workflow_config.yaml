@@ -220,7 +220,7 @@ backtest:
     class: "TopkDropoutStrategy"
     module_path: "qlib.contrib.strategy.signal_strategy"
     kwargs:
-      topk: 50                             # 回测时的选股数量
+      topk: 30                             # 回测时的选股数量
       n_drop: 5                            # 回测时的每期替换数
 
   # --- 回测交易参数（PortAnaRecord 嵌套结构） ---
@@ -290,4 +290,4 @@ labels:
     - name: "up_down_60d"
       horizon: 60
       description: "方向判断标签（60日，诊断用途，Phase B 新增，不作为独立训练目标）"
-  primary: "ret_20d"             # ★ 主 Label（handler 默认使用的预测目标）
+  primary: "xs_ret_60d"             # ★ 主 Label（handler 默认使用的预测目标）

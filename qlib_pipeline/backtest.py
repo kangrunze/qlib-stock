@@ -54,12 +54,25 @@ def _save_plotly_fig(fig, output_path: Path):
 
 
 def generate_report_charts(pred_df, report_normal_df, analysis_df,
-                          positions_df=None, output_dir: str = "output/qlib_charts"):
+                          positions_df=None, output_dir: str = "output/qlib_charts",
+                          model_tag: str = "", run_date: str = ""):
     """
     Generate all analysis charts from backtest results using Plotly.
+    
+    Args:
+        model_tag: 模型标识 (如 Alpha158_LGBModel_mse_20240630)，用于文件名
+        run_date: 运行日期 (如 20260707_1530)，用于日期层级目录
     """
-    output_path = Path(output_dir)
+    if run_date:
+        date_dir = run_date  # YYYYMMDD_HHMM，每次运行独立目录
+    else:
+        from datetime import datetime
+        date_dir = datetime.now().strftime("%Y%m%d_%H%M")
+    
+    output_path = Path(output_dir) / date_dir
     output_path.mkdir(parents=True, exist_ok=True)
+    
+    prefix = f"{model_tag}_" if model_tag else ""
 
     try:
         import plotly.graph_objects as go
@@ -104,10 +117,10 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                 plot_bgcolor='#1e293b',
                 font=dict(color='#f1f5f9'),
             )
-            out = output_path / "qlib_01_cumulative_return.png"
+            out = output_path / f"{prefix}01_cumulative_return.png"
             if _save_plotly_fig(fig, out):
-                charts.append("qlib_01_cumulative_return.png")
-                logger.info("图表生成: qlib_01_cumulative_return.png")
+                charts.append(f"{prefix}01_cumulative_return.png")
+                logger.info("图表生成: %s01_cumulative_return.png", prefix)
     except Exception as e:
         logger.error("累计收益图失败: %s", e)
 
@@ -141,10 +154,10 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                     plot_bgcolor='#1e293b',
                     font=dict(color='#f1f5f9'),
                 )
-                out = output_path / "qlib_02_pred_distribution.png"
+                out = output_path / f"{prefix}02_pred_distribution.png"
                 if _save_plotly_fig(fig, out):
-                    charts.append("qlib_02_pred_distribution.png")
-                    logger.info("图表生成: qlib_02_pred_distribution.png")
+                    charts.append(f"{prefix}02_pred_distribution.png")
+                    logger.info("图表生成: %s02_pred_distribution.png", prefix)
     except Exception as e:
         logger.error("预测分布图失败: %s", e)
 
@@ -188,10 +201,10 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                     font=dict(color='#f1f5f9'),
                     annotations=annotations,
                 )
-                out = output_path / "qlib_03_monthly_heatmap.png"
+                out = output_path / f"{prefix}03_monthly_heatmap.png"
                 if _save_plotly_fig(fig, out):
-                    charts.append("qlib_03_monthly_heatmap.png")
-                    logger.info("图表生成: qlib_03_monthly_heatmap.png")
+                    charts.append(f"{prefix}03_monthly_heatmap.png")
+                    logger.info("图表生成: %s03_monthly_heatmap.png", prefix)
     except Exception as e:
         logger.error("月度热力图失败: %s", e)
 
@@ -221,10 +234,10 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                 plot_bgcolor='#1e293b',
                 font=dict(color='#f1f5f9'),
             )
-            out = output_path / "qlib_04_drawdown.png"
+            out = output_path / f"{prefix}04_drawdown.png"
             if _save_plotly_fig(fig, out):
-                charts.append("qlib_04_drawdown.png")
-                logger.info("图表生成: qlib_04_drawdown.png")
+                charts.append(f"{prefix}04_drawdown.png")
+                logger.info("图表生成: %s04_drawdown.png", prefix)
     except Exception as e:
         logger.error("回撤图失败: %s", e)
 
@@ -254,10 +267,10 @@ def generate_report_charts(pred_df, report_normal_df, analysis_df,
                     plot_bgcolor='#1e293b',
                     font=dict(color='#f1f5f9'),
                 )
-                out = output_path / "qlib_05_rolling_sharpe.png"
+                out = output_path / f"{prefix}05_rolling_sharpe.png"
                 if _save_plotly_fig(fig, out):
-                    charts.append("qlib_05_rolling_sharpe.png")
-                    logger.info("图表生成: qlib_05_rolling_sharpe.png")
+                    charts.append(f"{prefix}05_rolling_sharpe.png")
+                    logger.info("图表生成: %s05_rolling_sharpe.png", prefix)
     except Exception as e:
         logger.error("滚动夏普图失败: %s", e)
 
@@ -404,7 +417,8 @@ def print_summary(report_normal_df, analysis_df, config: dict = None, picks_df =
 
 def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
                       output_dir: str = "output/picks",
-                      recorder_id: str = None, config_snapshot: dict = None):
+                      recorder_id: str = None, config_snapshot: dict = None,
+                      model_tag: str = "", run_date: str = ""):
     """
     从 Qlib 预测结果中提取 Top-K 选股推荐并打印和保存。
 
@@ -419,6 +433,8 @@ def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
         output_dir: CSV 输出目录
         recorder_id: Qlib Recorder ID（可选，用于追溯模型版本）
         config_snapshot: 配置快照 dict（可选，用于追溯参数）
+        model_tag: 模型标识，用于文件名
+        run_date: 运行日期，用于日期层级目录
 
     Returns:
         DataFrame[stock_code, score, rank, date]
@@ -509,6 +525,7 @@ def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
             save_stock_picks_to_file(
                 picks, output_dir=output_dir, date_str=target_date.strftime("%Y%m%d"),
                 recorder_id=recorder_id, config_snapshot=config_snapshot,
+                model_tag=model_tag, run_date=run_date,
             )
 
         return picks
@@ -519,7 +536,8 @@ def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
 
 
 def save_stock_picks_to_file(picks_df, output_dir: str = "output/picks", date_str: str = None,
-                            recorder_id: str = None, config_snapshot: dict = None):
+                            recorder_id: str = None, config_snapshot: dict = None,
+                            model_tag: str = "", run_date: str = ""):
     """保存选股结果到 CSV 文件，同时保存配置快照用于后续追溯。
 
     第 11.2 节闭环设计: 推荐时的配置快照（recorder_id、配置文件版本）一并归档，
@@ -528,9 +546,11 @@ def save_stock_picks_to_file(picks_df, output_dir: str = "output/picks", date_st
     Args:
         picks_df: 选股结果 DataFrame
         output_dir: 输出目录
-        date_str: 日期字符串
+        date_str: 选股日期字符串
         recorder_id: Qlib Recorder ID（可选，用于追溯模型版本）
         config_snapshot: 配置快照 dict（可选，用于追溯参数）
+        model_tag: 模型标识，用于文件名
+        run_date: 运行日期，用于日期层级目录
 
     Returns:
         (csv_path, meta_path) 元组
@@ -541,7 +561,11 @@ def save_stock_picks_to_file(picks_df, output_dir: str = "output/picks", date_st
     import json
     from datetime import datetime as dt
 
-    out_path = Path(output_dir)
+    if run_date:
+        date_dir = run_date  # YYYYMMDD_HHMM，每次运行独立目录
+    else:
+        date_dir = dt.now().strftime("%Y%m%d_%H%M")
+    out_path = Path(output_dir) / date_dir
     out_path.mkdir(parents=True, exist_ok=True)
 
     if date_str is None and "date" in picks_df.columns:
@@ -551,20 +575,20 @@ def save_stock_picks_to_file(picks_df, output_dir: str = "output/picks", date_st
     else:
         date_str = pd.Timestamp(date_str).strftime("%Y%m%d")
 
-    # 保存选股 CSV
-    csv_file = out_path / f"stock_picks_{date_str}.csv"
+    prefix = f"{model_tag}_" if model_tag else ""
+    csv_file = out_path / f"{prefix}stock_picks_{date_str}.csv"
     picks_df.to_csv(csv_file, index=False, encoding="utf-8-sig")
     logger.info("选股推荐已保存: %s", csv_file)
 
-    # 保存配置快照 JSON（第 11.2 节）
     meta = {
         "date": date_str,
         "saved_at": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
         "n_picks": len(picks_df),
         "recorder_id": recorder_id,
+        "model_tag": model_tag,
         "config_snapshot": config_snapshot or {},
     }
-    meta_file = out_path / f"stock_picks_{date_str}.meta.json"
+    meta_file = out_path / f"{prefix}stock_picks_{date_str}.meta.json"
     try:
         with open(meta_file, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False, default=str)
@@ -577,7 +601,8 @@ def save_stock_picks_to_file(picks_df, output_dir: str = "output/picks", date_st
 
 def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
                        init_cash: float = 100000000, report_normal_df=None,
-                       output_dir: str = "output/trades"):
+                       output_dir: str = "output/trades",
+                       model_tag: str = "", run_date: str = ""):
     """
     从预测信号中还原每日买卖点记录并保存为 CSV。
 
@@ -587,8 +612,8 @@ def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
       - 每只股票仓位 = 当日组合总资产 / topk
 
     输出两个文件:
-      1. output/trades/trade_records.csv - 买卖动作 (date, action, stock_code, amount, score)
-      2. output/trades/daily_holdings.csv - 每日持仓快照 (date, rank, stock_code, position_value, weight, score, is_new)
+      1. {output_dir}/{YYYYMMDD}/{model_tag}_trade_records.csv
+      2. {output_dir}/{YYYYMMDD}/{model_tag}_daily_holdings.csv
 
     Args:
         pred_df: 预测 DataFrame（MultiIndex: datetime, instrument; Column: score）
@@ -596,7 +621,9 @@ def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
         n_drop: 每期最大替换数
         init_cash: 初始资金
         report_normal_df: 日度回测报告（含 portfolio value，用于计算真实仓位金额）
-        output_dir: 输出目录
+        output_dir: 输出根目录
+        model_tag: 模型标识，用于文件名
+        run_date: 运行日期，用于日期层级目录
 
     Returns:
         Path to saved trade records CSV, or None on failure
@@ -610,6 +637,15 @@ def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
         if len(dates) < 1:
             logger.warning("交易日不足，无法生成买卖记录")
             return None
+
+        if run_date:
+            date_dir = run_date  # YYYYMMDD_HHMM，每次运行独立目录
+        else:
+            from datetime import datetime
+            date_dir = datetime.now().strftime("%Y%m%d_%H%M")
+        out_path = Path(output_dir) / date_dir
+        out_path.mkdir(parents=True, exist_ok=True)
+        prefix = f"{model_tag}_" if model_tag else ""
 
         # 获取每日组合总资产（从回测报告中提取）
         portfolio_values = {}
@@ -706,14 +742,10 @@ def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
                         "is_new": is_new,
                     })
 
-        # 保存买卖记录
-        out_path = Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
-
         if trade_records:
             trade_df = pd.DataFrame(trade_records)
             trade_df = trade_df.sort_values(["date", "action"]).reset_index(drop=True)
-            csv_file = out_path / "trade_records.csv"
+            csv_file = out_path / f"{prefix}trade_records.csv"
             trade_df.to_csv(csv_file, index=False, encoding="utf-8-sig")
             logger.info("买卖记录已保存: %s (%d 条)", csv_file, len(trade_df))
         else:
@@ -723,7 +755,7 @@ def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
         if holding_records:
             holding_df = pd.DataFrame(holding_records)
             holding_df = holding_df.sort_values(["date", "rank"]).reset_index(drop=True)
-            holding_file = out_path / "daily_holdings.csv"
+            holding_file = out_path / f"{prefix}daily_holdings.csv"
             holding_df.to_csv(holding_file, index=False, encoding="utf-8-sig")
             logger.info("每日持仓快照已保存: %s (%d 条)", holding_file, len(holding_df))
 

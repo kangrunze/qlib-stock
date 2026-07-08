@@ -90,6 +90,21 @@ logging.basicConfig(
 logger = logging.getLogger("run")
 
 
+def _make_run_dir(base_dir: str) -> str:
+    """为每次运行创建带时间戳的独立子目录，防止输出覆盖。
+
+    Args:
+        base_dir: 基础输出目录 (如 "output/rolling")
+
+    Returns:
+        str: 带时间戳的输出目录 (如 "output/rolling/20260708_1530")
+    """
+    from datetime import datetime
+    run_dir = Path(base_dir) / datetime.now().strftime("%Y%m%d_%H%M")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return str(run_dir)
+
+
 def _log_config_summary(config: dict, prefix: str = ""):
     """输出配置摘要日志（中文）"""
     p = prefix + "  " if prefix else ""
@@ -447,15 +462,28 @@ def cmd_backtest(args):
     report_normal_df = recorder.load_object("portfolio_analysis/report_normal_1day.pkl")
     analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
     print_summary(report_normal_df, analysis_df, config=config)
-    generate_report_charts(pred_df, report_normal_df, analysis_df, output_dir=args.output_dir)
-    logger.info("[步骤 4/4] ✓ 图表已保存到: %s", args.output_dir)
+
+    # 构造模型标识，用于文件命名和独立目录
+    from datetime import datetime
+    run_date = datetime.now().strftime("%Y%m%d_%H%M")
+    handler_name = config.get("dataset", {}).get("handler", "Alpha158")
+    model_name = config.get("qlib_lgb", {}).get("class", "LGBModel")
+    loss_name = config.get("qlib_lgb", {}).get("kwargs", {}).get("loss", "mse")
+    train_end = config.get("dataset", {}).get("segments", {}).get("train", ["", ""])[1]
+    train_end_short = train_end.replace("-", "") if train_end else "unknown"
+    model_tag = f"{handler_name}_{model_name}_{loss_name}_{train_end_short}"
+
+    generate_report_charts(pred_df, report_normal_df, analysis_df,
+                         output_dir=args.output_dir, model_tag=model_tag, run_date=run_date)
+    logger.info("[步骤 4/4] ✓ 图表已保存到: %s/%s", args.output_dir, run_date)
 
     # 输出选股推荐
     if hasattr(args, "pick_topk") and args.pick_topk > 0:
         logger.info("[附加] 生成选股推荐 Top-%d ...", args.pick_topk)
         print_stock_picks(pred_df, top_k=args.pick_topk, output_dir="output/picks",
-                         recorder_id=ba_rid, config_snapshot=config)
-        logger.info("[附加] ✓ 选股推荐已保存到 output/picks")
+                         recorder_id=ba_rid, config_snapshot=config,
+                         model_tag=model_tag, run_date=run_date)
+        logger.info("[附加] ✓ 选股推荐已保存到 output/picks/%s", run_date)
 
     logger.info("=" * 60)
     logger.info("回测流程全部完成!")
@@ -828,26 +856,39 @@ def cmd_full(args):
         analysis_df = recorder.load_object("portfolio_analysis/port_analysis_1day.pkl")
         print_summary(report_normal_df, analysis_df, config=config)
 
+        # 构造模型标识，用于文件命名
+        from datetime import datetime
+        run_date = datetime.now().strftime("%Y%m%d_%H%M")
+        handler_name = config.get("dataset", {}).get("handler", "Alpha158")
+        model_name = config.get("qlib_lgb", {}).get("class", "LGBModel")
+        loss_name = config.get("qlib_lgb", {}).get("kwargs", {}).get("loss", "mse")
+        train_end = config.get("dataset", {}).get("segments", {}).get("train", ["", ""])[1]
+        train_end_short = train_end.replace("-", "") if train_end else "unknown"
+        model_tag = f"{handler_name}_{model_name}_{loss_name}_{train_end_short}"
+
         logger.info("-" * 40)
         logger.info("[阶段 3/3] 生成图表与选股推荐")
         logger.info("-" * 40)
-        generate_report_charts(pred_df, report_normal_df, analysis_df, output_dir=args.output_dir)
-        logger.info("  ✓ 图表已保存到: %s", args.output_dir)
+        generate_report_charts(pred_df, report_normal_df, analysis_df,
+                             output_dir=args.output_dir, model_tag=model_tag, run_date=run_date)
+        logger.info("  ✓ 图表已保存到: %s/%s", args.output_dir, run_date)
 
         pick_topk = getattr(args, "pick_topk", 30)
         if pick_topk > 0:
             logger.info("  → 正在生成 Top-%d 选股推荐 ...", pick_topk)
             print_stock_picks(pred_df, top_k=pick_topk, output_dir="output/picks",
-                           recorder_id=ba_rid, config_snapshot=config)
-            logger.info("  ✓ 选股推荐已保存到 output/picks")
+                           recorder_id=ba_rid, config_snapshot=config,
+                           model_tag=model_tag, run_date=run_date)
+            logger.info("  ✓ 选股推荐已保存到 output/picks/%s", run_date)
 
-        # 保存买卖点记录（新增，用户要求）
+        # 保存买卖点记录
         from qlib_pipeline.backtest import save_trade_records
         backtopk = config.get("backtest", {}).get("strategy", {}).get("kwargs", {}).get("topk", 50)
         backdrop = config.get("backtest", {}).get("strategy", {}).get("n_drop", 5)
         init_cash = config.get("backtest", {}).get("backtest", {}).get("account", 100000000)
         save_trade_records(pred_df, topk=backtopk, n_drop=backdrop, init_cash=init_cash,
-                         report_normal_df=report_normal_df, output_dir="output/trades")
+                         report_normal_df=report_normal_df, output_dir="output/trades",
+                         model_tag=model_tag, run_date=run_date)
     except Exception as e:
         logger.error("[阶段 3/3] 图表/选股生成失败: %s", e)
         logger.error("  → 训练和回测结果已保存，不影响核心结论")
@@ -955,7 +996,7 @@ def cmd_rolling(args):
         config, n_folds=args.n_folds,
         window_years=args.window_years,
         step_months=args.step_months,
-        output_dir=args.output_dir,
+        output_dir=_make_run_dir(args.output_dir),
     )
     logger.info("[步骤 1/1] ✓ 滚动训练完成: %d 个窗口", len(df))
     logger.info("  → 结果已保存到: %s", args.output_dir)
@@ -998,7 +1039,7 @@ def cmd_drift(args):
         logger.info("  → 概念漂移检测: %d 个预警", int(drift_df["drift_warning"].sum()))
 
         # TODO: feature_stability() 需要跨折特征重要性列表，依赖 rolling.py 改造完成后接入
-        report = generate_drift_report(psi_df, drift_df, 0.0, output_dir=args.output_dir)
+        report = generate_drift_report(psi_df, drift_df, 0.0, output_dir=_make_run_dir(args.output_dir))
         logger.info("[步骤 3/3] ✓ 漂移检测完成")
         logger.info("  → 总特征数: %d, 显著漂移特征数: %d",
                     report["psi"]["n_features"],
@@ -1038,7 +1079,7 @@ def cmd_ic_stability(args):
     from qlib_pipeline.ic_stability import generate_ic_stability_report
     report = generate_ic_stability_report(
         ic_series,
-        output_dir=args.output_dir,
+        output_dir=_make_run_dir(args.output_dir),
     )
     logger.info("[步骤 4/4] ✓ IC 稳定性分析完成")
     logger.info("  → ICIR: %.4f", report["icir"])
@@ -1097,7 +1138,7 @@ def cmd_tscv(args):
     df = run_tscv(
         config, n_splits=args.n_splits,
         purge_days=args.purge_days, embargo_days=args.embargo_days,
-        output_dir=args.output_dir,
+        output_dir=_make_run_dir(args.output_dir),
     )
     logger.info("[步骤 1/1] ✓ TSCV 完成: %d folds", len(df))
     logger.info("  → 结果已保存到: %s", args.output_dir)
@@ -1157,7 +1198,7 @@ def cmd_regime(args):
         logger.info("  → 真实 RankIC 序列: %d 个交易日, IC 均值=%.4f", len(ic_series), ic_series.mean())
 
         from qlib_pipeline.regime import regime_analysis
-        df = regime_analysis(ic_series, regime_df, output_dir=args.output_dir)
+        df = regime_analysis(ic_series, regime_df, output_dir=_make_run_dir(args.output_dir))
         logger.info("[步骤 2/2] ✓ 市场阶段分析完成: %d 个阶段", len(df))
         logger.info("  → 报告已保存到: %s", args.output_dir)
     except Exception as e:
@@ -1174,11 +1215,11 @@ def cmd_sensitivity(args):
     if args.param:
         values = [float(v) for v in args.values.split(",")]
         logger.info("[步骤 1/1] 单参数扫描: %s = %s", args.param, values)
-        df = hyperparameter_sensitivity(config, args.param, values, output_dir=args.output_dir)
+        df = hyperparameter_sensitivity(config, args.param, values, output_dir=_make_run_dir(args.output_dir))
         logger.info("[步骤 1/1] ✓ 完成: %s -> %d 个扫描点", args.param, len(df))
     else:
         logger.info("[步骤 1/1] 运行敏感性分析套件 (全部关键参数) ...")
-        results = run_sensitivity_suite(config, output_dir=args.output_dir)
+        results = run_sensitivity_suite(config, output_dir=_make_run_dir(args.output_dir))
         logger.info("[步骤 1/1] ✓ 敏感性套件完成: %d 个参数", len(results))
     logger.info("  → 结果已保存到: %s", args.output_dir)
 
@@ -1202,7 +1243,7 @@ def cmd_key_years(args):
     logger.info("[步骤 1/1] 开始关键年份独立回测 ...")
 
     from qlib_pipeline.regime import key_year_backtest
-    df = key_year_backtest(config, years=years, output_dir=args.output_dir,
+    df = key_year_backtest(config, years=years, output_dir=_make_run_dir(args.output_dir),
                            pretrained_rid=args.rid)
     logger.info("[步骤 1/1] ✓ 关键年份回测完成: %d 个年份", len(df))
     logger.info("  → 结果已保存到: %s", args.output_dir)
@@ -1356,7 +1397,7 @@ def cmd_validate_picks(args):
         return
 
     val_df = pd.DataFrame(validation_results)
-    report = validator.generate_validation_report(val_df, output_dir=args.output_dir)
+    report = validator.generate_validation_report(val_df, output_dir=_make_run_dir(args.output_dir))
 
     logger.info("=" * 60)
     logger.info("验证报告摘要:")
@@ -1397,7 +1438,7 @@ def cmd_pick(args):
     print_summary(report_normal_df, analysis_df, config=config)
     if args.date:
         logger.info("  → 指定日期: %s", args.date)
-    picks = print_stock_picks(pred_df, top_k=args.topk, date=args.date, output_dir=args.output_dir,
+    picks = print_stock_picks(pred_df, top_k=args.topk, date=args.date, output_dir=_make_run_dir(args.output_dir),
                            recorder_id=args.rid, config_snapshot=config)
     logger.info("[步骤 2/2] ✓ 选股推荐已保存到: %s", args.output_dir)
     return picks
@@ -1414,7 +1455,7 @@ def cmd_optuna(args):
         n_trials=args.n_trials,
         timeout=args.timeout,
         study_name=getattr(args, "study_name", "lgb_optimization"),
-        output_dir=args.output_dir,
+        output_dir=_make_run_dir(args.output_dir),
         phase=getattr(args, "phase", "exploration"),
     )
 
@@ -1451,7 +1492,7 @@ def cmd_explain(args):
     report = generate_shap_report(
         model=model,
         dataset=dataset,
-        output_dir=args.output_dir,
+        output_dir=_make_run_dir(args.output_dir),
         segment=getattr(args, "segment", "test"),
         max_samples=getattr(args, "max_samples", 2000),
     )
@@ -1784,7 +1825,7 @@ def cmd_benchmark(args):
         logger.info("[参数] 运行全部实验 (E1-E5)")
 
     from research.benchmark import run_benchmark_suite
-    report = run_benchmark_suite(config, experiments=experiments, output_dir=args.output_dir)
+    report = run_benchmark_suite(config, experiments=experiments, output_dir=_make_run_dir(args.output_dir))
     logger.info("实验完成，报告已保存到: %s", args.output_dir)
 
 
