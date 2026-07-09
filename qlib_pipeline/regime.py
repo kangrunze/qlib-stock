@@ -52,25 +52,32 @@ def classify_market_regime(price_series: pd.Series,
     returns = price_series.pct_change()
     vol = returns.rolling(vol_window).std()
 
-    vol_median = vol.median()
+    # 扩展窗口中位数（消除 look-ahead）：每个时点只使用当时及之前的数据
+    # min_periods 设为 vol_window*2，避免序列早期样本太少导致中位数不稳定
+    # 样本不足的早期日期，vol_median_series 为 NaN，regime 保持 "unknown"
+    vol_median_series = vol.expanding(min_periods=vol_window * 2).median()
 
     df = pd.DataFrame({
         "date": price_series.index,
         "price": price_series.values,
         "ma": ma.values,
         "vol": vol.values,
+        "vol_median": vol_median_series.values,
     })
 
     df["regime"] = "unknown"
     above_ma = df["price"] > df["ma"]
-    low_vol = df["vol"] < vol_median
+    # 逐行与扩展窗口中位数比较（而非全局常数），vol_median 为 NaN 时 low_vol 也为 NaN
+    low_vol = df["vol"] < df["vol_median"]
 
     df.loc[above_ma & low_vol, "regime"] = "bull"
     df.loc[above_ma & ~low_vol, "regime"] = "strong_bull"
     df.loc[~above_ma & low_vol, "regime"] = "bear"
     df.loc[~above_ma & ~low_vol, "regime"] = "strong_bear"
 
-    df = df.dropna()
+    df = df.dropna(subset=["price", "ma", "vol", "vol_median"])
+    # 删除临时列，保持与原返回结构一致（date, price, ma, vol, regime）
+    df = df.drop(columns=["vol_median"])
     return df
 
 
@@ -212,8 +219,9 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
     from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
     from qlib.utils import flatten_dict
 
-    provider_uri = config.get("qlib", {}).get("provider_uri",
-                     "D:/trae/qlib_bin")
+    provider_uri = os.environ.get("QLIB_PROVIDER_URI") or config.get("qlib", {}).get("provider_uri")
+    if not provider_uri:
+        raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量，且配置文件中也未指定 qlib.provider_uri")
     qlib.init(provider_uri=provider_uri, region=REG_CN)
 
     from qlib.config import C

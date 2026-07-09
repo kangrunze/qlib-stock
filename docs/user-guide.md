@@ -49,16 +49,49 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 ```
 
+### 1.5 环境变量配置（必读）
+
+项目不再在代码中写死数据路径，所有数据目录通过环境变量或配置文件读取。
+**首次使用前必须设置以下环境变量**，否则数据相关功能会抛出 `ValueError`。
+
+| 环境变量 | 用途 | 对应配置文件字段 |
+|----------|------|------------------|
+| `QLIB_PROVIDER_URI` | Qlib bin 格式数据根目录 | `data_source.qlib_dir` |
+| `CSV_DATA_DIR` | CSV 原始数据目录（AKShare 下载） | `data_source.csv_dir` |
+
+**设置方式（三选一）：**
+
+1. **系统环境变量**（推荐，永久生效）：
+   ```powershell
+   # Windows PowerShell
+   [Environment]::SetEnvironmentVariable("QLIB_PROVIDER_URI", "D:/trae/qlib_bin", "User")
+   [Environment]::SetEnvironmentVariable("CSV_DATA_DIR", "D:/data", "User")
+   ```
+
+2. **会话级环境变量**（临时）：
+   ```powershell
+   $env:QLIB_PROVIDER_URI = "D:/trae/qlib_bin"
+   $env:CSV_DATA_DIR = "D:/data"
+   ```
+
+3. **配置文件**：在 `config/settings.yaml` 中设置 `data_source.qlib_dir` 和 `data_source.csv_dir`。
+
+完整变量列表参见项目根目录的 `.env.example`。
+
+> 优先级：环境变量 > 配置文件字段。两者均未设置时抛出 `ValueError`，不会静默使用写死的默认路径。
+
 ---
 
 ## 2. 数据管理
 
 ### 2.1 数据目录
 
-| 路径 | 用途 | 配置项 |
-|------|------|--------|
-| `D:/data/` | CSV 原始数据（AKShare 下载） | `data_source.csv_dir` |
-| `D:/download/qlib_bin/` | Qlib bin 格式数据 | `data_source.qlib_dir` |
+数据路径通过环境变量配置（参见 [1.5 环境变量配置](#15-环境变量配置必读)），不再写死在代码中。
+
+| 环境变量 | 用途 | 配置文件字段 |
+|----------|------|--------------|
+| `CSV_DATA_DIR` | CSV 原始数据（AKShare 下载） | `data_source.csv_dir` |
+| `QLIB_PROVIDER_URI` | Qlib bin 格式数据 | `data_source.qlib_dir` |
 
 ### 2.2 下载数据
 

@@ -115,4 +115,4 @@ def get_average_volume_from_data(
     rolling_avg_volume = volume_df.rolling(window=window).mean()
     # 取最新值
     latest_avg = rolling_avg_volume.iloc[-1]
-    return latest_avg_volume.dropna()
+    return latest_avg.dropna()

@@ -240,14 +240,20 @@ class DataStore:
             return ParquetDataStore(parquet_dir, start_date, end_date)
 
         elif fmt == "csv":
-            csv_dir = ds_cfg.get("csv_dir", "D:/data")
+            csv_dir = os.environ.get("CSV_DATA_DIR") or ds_cfg.get("csv_dir")
+            if not csv_dir:
+                raise ValueError("未设置 CSV_DATA_DIR 环境变量，且配置文件中也未指定 data_source.csv_dir")
             return CsvDataStore(csv_dir, start_date, end_date)
 
         elif fmt == "qlib":
-            qlib_dir = ds_cfg.get("qlib_dir", "D:/trae/qlib_bin")
+            qlib_dir = os.environ.get("QLIB_PROVIDER_URI") or ds_cfg.get("qlib_dir")
+            if not qlib_dir:
+                raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量，且配置文件中也未指定 data_source.qlib_dir")
             return QlibDataStore(qlib_dir, start_date, end_date)
 
         else:
             logger.warning("未知的 data_format=%s，回退到 CSV", fmt)
-            csv_dir = ds_cfg.get("csv_dir", "D:/data")
+            csv_dir = os.environ.get("CSV_DATA_DIR") or ds_cfg.get("csv_dir")
+            if not csv_dir:
+                raise ValueError("未设置 CSV_DATA_DIR 环境变量，且配置文件中也未指定 data_source.csv_dir")
             return CsvDataStore(csv_dir, start_date, end_date)

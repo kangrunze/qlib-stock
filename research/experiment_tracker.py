@@ -170,10 +170,27 @@ class ExperimentTracker:
             # 检查确认窗口的测试数据是否与探索阶段有重叠
             conf_records = [r for r in self._records if r.get("phase") == "confirmation"]
             conf_test = conf_records[0].get("test_data_range")
-            for r in self._records:
-                if r.get("phase") == "exploration" and r.get("test_data_range"):
-                    # 简单检查：日期范围是否重叠
-                    pass  # 复杂的日期重叠检查留给用户自行判断
+            if conf_test and len(conf_test) == 2:
+                import pandas as pd
+                conf_interval = pd.Interval(
+                    pd.Timestamp(conf_test[0]), pd.Timestamp(conf_test[1]),
+                    closed="both",
+                )
+                for r in self._records:
+                    if r.get("phase") == "exploration" and r.get("test_data_range"):
+                        exp_range = r["test_data_range"]
+                        if not exp_range or len(exp_range) != 2:
+                            continue
+                        exp_interval = pd.Interval(
+                            pd.Timestamp(exp_range[0]), pd.Timestamp(exp_range[1]),
+                            closed="both",
+                        )
+                        if conf_interval.overlaps(exp_interval):
+                            return False, (
+                                f"确认阶段协议违规: 确认窗口 {list(conf_test)} 与探索阶段实验 "
+                                f"{r.get('description', r.get('recorder_id', '未知'))} 的测试窗口 "
+                                f"{list(exp_range)} 存在重叠，违反训练/验证/测试纪律"
+                            )
 
         return True, "确认阶段协议检查通过"
 

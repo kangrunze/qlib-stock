@@ -32,8 +32,20 @@ logger = logging.getLogger(__name__)
 # ===== PSI 特征漂移检测 =====
 
 def _psi_bucket(series: pd.Series, bins: int = 10) -> Tuple[np.ndarray, np.ndarray]:
-    """Equal-width binning, returns (bin_edges, expected_distribution)."""
-    counts, edges = np.histogram(series.dropna(), bins=bins)
+    """Equal-frequency (quantile) binning, returns (bin_edges, expected_distribution).
+
+    用基于基准序列（expected）的等频分位数定义分箱边界，
+    这是 PSI 的标准做法：用基准分布定义分箱边界，再看新分布
+    落在这些分箱里是否发生了明显偏移。actual 序列复用同一组 edges。
+    """
+    clean = series.dropna()
+    if len(clean) < bins:
+        # 样本不足时退化为等宽分箱
+        counts, edges = np.histogram(clean, bins=bins)
+    else:
+        # 等频分箱：用 qcut 在 expected 序列上计算分位数边界
+        edges = pd.qcut(clean, q=bins, retbins=True, duplicates="drop")[1]
+        counts, _ = np.histogram(clean, bins=edges)
     expected = counts / counts.sum()
     expected = np.clip(expected, 1e-6, None)  # Avoid log(0)
     expected = expected / expected.sum()

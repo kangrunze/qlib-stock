@@ -54,8 +54,15 @@ with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
 _paths = _config.get("paths", {})
 _ds_conf = _config.get("data_source", {})
 
-CSV_DIR = Path(_ds_conf.get("csv_dir", "D:/data"))
-QLIB_DIR = Path(_ds_conf.get("qlib_dir", "D:/trae/qlib_bin"))
+_csv_data_dir = os.environ.get("CSV_DATA_DIR") or _ds_conf.get("csv_dir")
+if not _csv_data_dir:
+    raise ValueError("未设置 CSV_DATA_DIR 环境变量，且配置文件中也未指定 data_source.csv_dir")
+CSV_DIR = Path(_csv_data_dir)
+
+_qlib_provider_uri = os.environ.get("QLIB_PROVIDER_URI") or _ds_conf.get("qlib_dir")
+if not _qlib_provider_uri:
+    raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量，且配置文件中也未指定 data_source.qlib_dir")
+QLIB_DIR = Path(_qlib_provider_uri)
 MAX_WORKERS = _ds_conf.get("max_workers", 10)
 
 # 北交所代码前缀
@@ -280,10 +287,79 @@ def update_bin_file(
             if 0 <= local_idx < max_idx:
                 new_full_values[local_idx] = val
     
-    # 写入文件
+    # 写入文件（原子写：先写临时文件，成功后 os.replace 原子替换）
     bin_data = np.hstack([np.float32(start_idx), new_full_values]).astype("<f")
-    with open(bin_path, "wb") as f:
+    tmp_path = bin_path.with_suffix(bin_path.suffix + ".tmp")
+    with open(tmp_path, "wb") as f:
         bin_data.tofile(f)
+    os.replace(tmp_path, bin_path)
+
+
+def detect_adjust_events(new_data: Dict[str, pd.DataFrame], log_path: str = None) -> int:
+    """检测疑似除权除息事件并记录到日志文件。
+
+    判定逻辑：单日收盘价涨跌幅超过涨跌停限制（默认 11%，略高于 A 股 10% 涨跌停阈值，
+    留出余量避免边缘误判），通常意味着发生了除权除息而不是真实的价格跳空。
+
+    仅检测不自动修复：除权事件会写入 data_center/adjust_events.log，
+    需要人工核实后手动触发该股票的全量数据重新下载和 bin 重建。
+
+    Args:
+        new_data: 新下载的 DataFrame 字典 {code: df}，df 需包含 date/close 列
+        log_path: 日志文件路径，默认为 data_center/adjust_events.log
+
+    Returns:
+        检测到的疑似除权事件数量
+    """
+    if log_path is None:
+        log_path = str(_PROJECT_ROOT / "data_center" / "adjust_events.log")
+
+    # 涨跌停阈值（A 股主板 10%，留 1% 余量用 11% 作为异常判定阈值）
+    ADJUST_THRESHOLD = 0.11
+
+    events = []
+    for code, df in new_data.items():
+        if df is None or len(df) < 2:
+            continue
+        if "close" not in df.columns or "date" not in df.columns:
+            continue
+
+        df_sorted = df.sort_values("date").reset_index(drop=True)
+        df_sorted["prev_close"] = df_sorted["close"].shift(1)
+        df_sorted["pct_chg"] = (df_sorted["close"] - df_sorted["prev_close"]) / df_sorted["prev_close"]
+
+        # 筛选异常涨跌幅（绝对值 > 11%），排除首日（无前收盘价）
+        abnormal = df_sorted[
+            (df_sorted["pct_chg"].abs() > ADJUST_THRESHOLD) & df_sorted["prev_close"].notna()
+        ]
+
+        for _, row in abnormal.iterrows():
+            events.append({
+                "code": code,
+                "date": pd.Timestamp(row["date"]).strftime("%Y-%m-%d"),
+                "prev_close": float(row["prev_close"]),
+                "close": float(row["close"]),
+                "pct_chg": float(row["pct_chg"]),
+            })
+
+    if events:
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 检测到 {len(events)} 个疑似除权事件:\n")
+            for ev in events:
+                f.write(
+                    f"  code={ev['code']}, date={ev['date']}, "
+                    f"prev_close={ev['prev_close']:.4f}, close={ev['close']:.4f}, "
+                    f"pct_chg={ev['pct_chg']*100:.2f}%\n"
+                )
+        logger.warning(
+            "检测到 %d 个疑似除权除息事件，已记录到 %s，请人工核实并视情况重建相关股票的 bin 数据",
+            len(events), log_path
+        )
+    else:
+        logger.info("未检测到疑似除权除息事件")
+
+    return len(events)
 
 
 def update_qlib_bin_files(
@@ -293,12 +369,22 @@ def update_qlib_bin_files(
 ) -> int:
     """
     增量更新 Qlib bin 文件
-    
+
+    ⚠ 已知限制（复权漂移）:
+        当前实现仅追加新增日期数据，不会自动回填因除权事件导致的历史价格漂移。
+        如果某股票发生除权除息，其前复权(qfq)历史价格会整体调整，但本函数只写入
+        新增日期的 bin 数据，历史 bin 中的 qfq 价格仍为旧口径，导致 bin 数据和
+        最新下载的 CSV 数据口径可能不一致。
+        如需修正，需要手动触发该股票的全量数据重新下载和 bin 重建（删除其 features
+        目录后重新跑全量转换）。
+        除权事件会通过 detect_adjust_events() 记录到 data_center/adjust_events.log，
+        便于后续人工核实和处理。
+
     Args:
         new_data: 新下载的 DataFrame
         old_dates: 旧的日历日期集合
         new_dates: 新的日历日期列表
-    
+
     Returns:
         更新的股票数量
     """
@@ -477,13 +563,28 @@ def update_workflow_config(new_end_date: str) -> None:
 
 def daily_update(days: int = 3, skip_bin: bool = False, workers: int = MAX_WORKERS) -> None:
     """
-    执行每日增量更新
-    
+    执行每日增量更新（单实例文件锁保护）
+
+    使用 filelock 确保同一时刻只有一个更新进程在运行，避免并发写入冲突。
+
     Args:
         days: 下载最近多少天的数据
         skip_bin: 是否跳过 bin 文件更新
         workers: 并发线程数
     """
+    from filelock import FileLock, Timeout
+
+    lock_path = str(_PROJECT_ROOT / "daily_update.lock")
+    try:
+        with FileLock(lock_path, timeout=10):
+            _do_daily_update(days, skip_bin, workers)
+    except Timeout:
+        logger.error("另一个更新进程正在运行，本次更新跳过，避免并发写入冲突")
+        return
+
+
+def _do_daily_update(days: int, skip_bin: bool, workers: int) -> None:
+    """实际的每日增量更新逻辑（由 daily_update 在文件锁保护下调用）。"""
     start_time = time.time()
     
     logger.info("=" * 60)
@@ -520,6 +621,8 @@ def daily_update(days: int = 3, skip_bin: bool = False, workers: int = MAX_WORKE
     # 4. 更新 bin 文件
     if not skip_bin:
         update_qlib_bin_files(new_data, existing_dates, combined_dates)
+        # 4.1 检测疑似除权除息事件（Task 5 复权漂移缓解）
+        detect_adjust_events(new_data)
     
     # 5. 更新 calendars
     update_calendars(combined_dates)

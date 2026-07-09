@@ -248,8 +248,31 @@ class CsvDataLoader:
                 df["preclose"] = df["close"].shift(1)
 
             # is_st 和 is_suspended
-            df["is_st"] = False
-            df["is_suspended"] = (df["volume"] == 0) | df["volume"].isna()
+            # is_st: 优先从 name 列推断（若 CSV 含名称列），否则置 NaN 表示"数据源未提供"
+            #        不再硬编码 False，以区分"确定不是ST"和"不知道是否ST"
+            if "name" in df.columns:
+                df["is_st"] = df["name"].astype(str).str.contains("ST", na=False)
+            else:
+                df["is_st"] = np.nan
+                logger.debug(
+                    "股票 %s 的 CSV 数据无 name 列，is_st 字段不可用（置为 NaN）", code
+                )
+            # is_suspended: 同时满足 volume==0 且 amount==0 才判定停牌
+            #   正常交易日即使收盘价和前一天一样，成交量和成交额几乎不可能同时为0
+            #   退化方案：若无 amount 列，退回只用 volume==0
+            if "volume" in df.columns:
+                vol_zero = (df["volume"] == 0) | df["volume"].isna()
+                if "amount" in df.columns:
+                    amt_zero = (df["amount"] == 0) | df["amount"].isna()
+                    df["is_suspended"] = vol_zero & amt_zero
+                else:
+                    # 退化方案：无 amount 列，仅用 volume==0（可能误判平收日）
+                    df["is_suspended"] = vol_zero
+                    logger.debug(
+                        "股票 %s 的 CSV 数据无 amount 列，停牌判定退化为仅用 volume==0", code
+                    )
+            else:
+                df["is_suspended"] = np.nan
 
             return df
 

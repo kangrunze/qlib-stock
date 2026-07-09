@@ -160,11 +160,14 @@ class DuckDBStore:
         """
         self.register_views()
 
-        conditions = [f"code = '{code}'"]
+        conditions = ["code = ?"]
+        params = [code]
         if start:
-            conditions.append(f"date >= '{start}'")
+            conditions.append("date >= ?")
+            params.append(start)
         if end:
-            conditions.append(f"date <= '{end}'")
+            conditions.append("date <= ?")
+            params.append(end)
 
         where_clause = " AND ".join(conditions)
         sql = f"""
@@ -173,7 +176,7 @@ class DuckDBStore:
             WHERE {where_clause}
             ORDER BY date ASC
         """
-        return self.conn.execute(sql).fetchdf()
+        return self.conn.execute(sql, params).fetchdf()
 
     def get_market_snapshot(
         self,
@@ -199,17 +202,20 @@ class DuckDBStore:
         valid_cols = {"pct_chg", "amount", "volume", "turnover_rate", "amplitude"}
         sort_col = sort_by if sort_by in valid_cols else "pct_chg"
         order_clause = order if order.upper() in ("ASC", "DESC") else "DESC"
+        # top_n 必须是正整数（白名单校验，防注入）
+        if not isinstance(top_n, int) or top_n <= 0 or top_n > 10000:
+            top_n = 50
 
         sql = f"""
             SELECT *
             FROM daily_data
-            WHERE date = '{date}'
+            WHERE date = ?
                 AND is_suspended = false
                 AND is_st = false
             ORDER BY {sort_col} {order_clause}
             LIMIT {top_n}
         """
-        return self.conn.execute(sql).fetchdf()
+        return self.conn.execute(sql, [date]).fetchdf()
 
     def get_stock_list(self) -> pd.DataFrame:
         """
@@ -265,10 +271,13 @@ class DuckDBStore:
         # 回退: 从daily_data中获取去重日期
         self.register_views()
         conditions = []
+        params = []
         if start:
-            conditions.append(f"date >= '{start}'")
+            conditions.append("date >= ?")
+            params.append(start)
         if end:
-            conditions.append(f"date <= '{end}'")
+            conditions.append("date <= ?")
+            params.append(end)
         where = " AND ".join(conditions) if conditions else "1=1"
         sql = f"""
             SELECT DISTINCT date
@@ -276,7 +285,7 @@ class DuckDBStore:
             WHERE {where}
             ORDER BY date
         """
-        return self.conn.execute(sql).fetchdf()
+        return self.conn.execute(sql, params).fetchdf()
 
     def get_cross_section(
         self,
@@ -299,8 +308,19 @@ class DuckDBStore:
         """
         self.register_views()
 
-        select_cols = "*" if columns is None else ", ".join(columns)
-        conditions = [f"date = '{date}'"]
+        # select_cols 白名单校验（列名不能用参数绑定，需防注入）
+        valid_select = {"date", "code", "open", "high", "low", "close", "volume",
+                        "amount", "pct_chg", "turnover_rate", "amplitude",
+                        "is_st", "is_suspended", "name"}
+        if columns is None:
+            select_cols = "*"
+        else:
+            select_cols = ", ".join(c for c in columns if c in valid_select)
+            if not select_cols:
+                select_cols = "*"
+
+        conditions = ["date = ?"]
+        params = [date]
         if exclude_st:
             conditions.append("is_st = false")
         if exclude_suspended:
@@ -313,7 +333,7 @@ class DuckDBStore:
             WHERE {where_clause}
             ORDER BY code
         """
-        return self.conn.execute(sql).fetchdf()
+        return self.conn.execute(sql, params).fetchdf()
 
     def get_price_history_multi(
         self,
@@ -336,17 +356,29 @@ class DuckDBStore:
         """
         self.register_views()
 
-        select_cols = ", ".join(fields) if fields else "*"
-        code_list = ", ".join([f"'{c}'" for c in codes])
+        # fields 白名单校验（列名不能用参数绑定）
+        valid_fields = {"date", "code", "open", "high", "low", "close", "volume",
+                        "amount", "pct_chg", "turnover_rate", "amplitude",
+                        "is_st", "is_suspended", "name"}
+        if fields:
+            select_cols = ", ".join(f for f in fields if f in valid_fields)
+            if not select_cols:
+                select_cols = "*"
+        else:
+            select_cols = "*"
+
+        # codes 用 IN(?,?,...) 参数绑定
+        placeholders = ", ".join(["?"] * len(codes))
+        params = list(codes) + [start, end]
         sql = f"""
             SELECT {select_cols}
             FROM daily_data
-            WHERE code IN ({code_list})
-                AND date >= '{start}'
-                AND date <= '{end}'
+            WHERE code IN ({placeholders})
+                AND date >= ?
+                AND date <= ?
             ORDER BY code, date
         """
-        return self.conn.execute(sql).fetchdf()
+        return self.conn.execute(sql, params).fetchdf()
 
     def get_statistics(
         self,
@@ -367,7 +399,12 @@ class DuckDBStore:
         """
         self.register_views()
 
-        code_filter = f"AND code = '{code}'" if code else ""
+        conditions = ["date >= ?", "date <= ?"]
+        params = [start, end]
+        if code:
+            conditions.append("code = ?")
+            params.append(code)
+        where_clause = " AND ".join(conditions)
         sql = f"""
             SELECT
                 code,
@@ -380,13 +417,11 @@ class DuckDBStore:
                 AVG(turnover_rate) as avg_turnover,
                 AVG(pct_chg) as avg_pct_chg
             FROM daily_data
-            WHERE date >= '{start}'
-                AND date <= '{end}'
-                {code_filter}
+            WHERE {where_clause}
             GROUP BY code
             ORDER BY code
         """
-        return self.conn.execute(sql).fetchdf()
+        return self.conn.execute(sql, params).fetchdf()
 
     def close(self):
         """关闭DuckDB连接"""

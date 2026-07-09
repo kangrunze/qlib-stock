@@ -13,6 +13,7 @@ Qlib Training Pipeline - train.py
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -35,6 +36,54 @@ from qlib_pipeline.dataset import load_workflow_config
 from qlib_pipeline.model import create_rank_model  # Qlib LGB shortcut
 
 logger = logging.getLogger(__name__)
+
+
+class CSMedianSubtract:
+    """截面中位数相减处理器（自定义 Qlib Processor）。
+
+    对每个交易日的所有股票，用该股票的 label 值减去当天全部股票 label 的中位数。
+    这是 xs_ret_Nd 标签的标准实现：xs_ret = ret - 截面中位数(ret)。
+
+    与 CSZScoreNorm 的区别：
+      - CSZScoreNorm: (x - mean) / std  —— 均值代替中位数，且多做一次 std 缩放
+      - CSMedianSubtract: x - median    —— 严格按标签定义，只用中位数不减 std
+
+    作为 Qlib learn_processor 使用（在 handler 的 learn_processors 中配置），
+    只作用于 label 字段组，不影响 feature。
+    """
+
+    def __init__(self, fields_group="label"):
+        self.fields_group = fields_group
+
+    def fit(self, df=None):
+        """学习处理参数（截面中位数减法无需学习，空实现）。"""
+        pass
+
+    def __call__(self, df):
+        from qlib.data.dataset.processor import get_group_columns
+        # 获取字段组对应的列
+        if not isinstance(self.fields_group, list):
+            groups = [self.fields_group]
+        else:
+            groups = self.fields_group
+        with pd.option_context("mode.chained_assignment", None):
+            for g in groups:
+                try:
+                    cols = get_group_columns(df, g)
+                except (KeyError, TypeError):
+                    # 非 MultiIndex 列时退化为处理所有列
+                    cols = df.columns
+                # 按日期分组，每组减去该日截面中位数
+                df[cols] = df[cols].groupby("datetime", group_keys=False).apply(
+                    lambda x: x - x.median()
+                )
+        return df
+
+    def is_for_infer(self) -> bool:
+        return True
+
+    def readonly(self) -> bool:
+        return False
 
 
 def _build_label_config(label_name: str) -> list:
@@ -70,12 +119,10 @@ def _build_label_config(label_name: str) -> list:
     if prefix == "ret":
         return [base_expr]
     elif prefix == "xs_ret":
-        # 相对全池中位数: 用截面中位数减法
-        # Qlib 表达式: 基础收益 - CS-Median(基础收益)
-        # 但 Qlib 的 CS-Median 需要 Mean 操作符支持，简化为直接用 label 后处理
-        # 这里返回基础表达式，截面中位数减法通过 learn_processors 的 CSZScoreNorm 实现
-        # CSZScoreNorm 会做 (x - mean) / std，效果类似去均值
-        logger.info("xs_ret_%dd: 使用基础收益率 + CSZScoreNorm 实现截面去均值", horizon)
+        # 相对全池中位数: xs_ret = ret - 截面中位数(ret)
+        # 返回基础收益率表达式，截面中位数减法通过 learn_processors 的
+        # CSMedianSubtract 实现（在 build_task 中注入），严格按标签定义
+        logger.info("xs_ret_%dd: 使用基础收益率 + CSMedianSubtract 实现截面中位数减法", horizon)
         return [base_expr]
     elif prefix == "alpha":
         # 相对基准超额: 需要 Phase C 基准数据，暂时回退到基础收益率
@@ -96,6 +143,9 @@ def build_task(config: dict) -> dict:
     模型超参数从 workflow_config.yaml 的 qlib_lgb 段读取。
     label 由 labels.primary 决定，自动生成 Qlib 表达式。
 
+    xs_ret_Nd 标签会注入 CSMedianSubtract learn_processor（截面中位数减法），
+    其他标签（ret_Nd / alpha_Nd / up_down_Nd）不注入额外 processor。
+
     Args:
         config: workflow config dict
 
@@ -111,6 +161,25 @@ def build_task(config: dict) -> dict:
     label_expr = _build_label_config(primary_label)
     handler_cfg["label"] = label_expr
     logger.info("使用 label: %s → %s", primary_label, label_expr)
+
+    # xs_ret_Nd 标签注入 CSMedianSubtract learn_processor（截面中位数减法）
+    # 仅影响 xs_ret_Nd，不影响其他标签
+    import re
+    is_xs_ret = bool(re.match(r"^xs_ret_\d+d$", primary_label))
+    if is_xs_ret:
+        # 注入 CSMedianSubtract，与 handler 默认的 learn_processors 合并
+        existing_lp = handler_cfg.get("learn_processors", [])
+        # 用 dict config 形式让 Qlib init_instance_by_config 能实例化
+        cs_median_cfg = {
+            "class": "CSMedianSubtract",
+            "module_path": "qlib_pipeline.train",
+            "kwargs": {"fields_group": "label"},
+        }
+        if isinstance(existing_lp, list):
+            handler_cfg["learn_processors"] = existing_lp + [cs_median_cfg]
+        else:
+            handler_cfg["learn_processors"] = [existing_lp, cs_median_cfg]
+        logger.info("xs_ret 标签注入 CSMedianSubtract learn_processor")
 
     # Data handler
     handler_cfg = {
@@ -161,7 +230,9 @@ def init_qlib_env(config: dict):
     seed = config.get("experiment", {}).get("random_seed", 42)
     np.random.seed(seed)
 
-    provider_uri = config.get("qlib", {}).get("provider_uri", "D:/trae/qlib_bin")
+    provider_uri = os.environ.get("QLIB_PROVIDER_URI") or config.get("qlib", {}).get("provider_uri")
+    if not provider_uri:
+        raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量，且配置文件中也未指定 qlib.provider_uri")
     logger.info("初始化 Qlib: %s", provider_uri)
     qlib.init(provider_uri=provider_uri, region=REG_CN)
 

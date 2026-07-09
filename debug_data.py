@@ -7,11 +7,17 @@ from qlib_pipeline.numpy_compat import *  # noqa
 import qlib
 from qlib.data import D
 import pandas as pd
+from pathlib import Path
+
+_provider_uri = os.environ.get("QLIB_PROVIDER_URI") or os.environ.get("QLIB_DIR")
+if not _provider_uri:
+    raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量")
+_QLIB_DIR = Path(_provider_uri)
 
 print("=" * 60)
 print("Step 1: Initialize Qlib")
 print("=" * 60)
-qlib.init(provider_uri="D:/trae/qlib_bin", region="cn")
+qlib.init(provider_uri=str(_QLIB_DIR), region="cn")
 
 print("\n" + "=" * 60)
 print("Step 2: Check calendar")
@@ -26,7 +32,7 @@ except Exception as e:
 print("\n" + "=" * 60)
 print("Step 3: Check instruments file format")
 print("=" * 60)
-inst_path = r"D:\trae\qlib_bin\instruments\all.txt"
+inst_path = _QLIB_DIR / "instruments" / "all.txt"
 with open(inst_path, "r") as f:
     lines = f.readlines()[:5]
 print("First 5 lines of all.txt:")
@@ -47,7 +53,7 @@ print("\n" + "=" * 60)
 print("Step 5: Try loading features for single stock")
 print("=" * 60)
 # Get a stock from features directory
-features_dir = r"D:\trae\qlib_bin\features"
+features_dir = _QLIB_DIR / "features"
 sample_stock = os.listdir(features_dir)[0]
 print(f"Testing with stock: {sample_stock}")
 

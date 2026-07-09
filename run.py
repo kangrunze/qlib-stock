@@ -221,9 +221,10 @@ def parse_args():
     data_parser.add_argument("--convert", action="store_true")
     data_parser.add_argument("--check", action="store_true")
     data_parser.add_argument("--sample", type=int, default=None)
-    data_parser.add_argument("--csv-dir", type=str, default=_ds_cfg.get("csv_dir", "D:/data"))
+    data_parser.add_argument("--csv-dir", type=str,
+                        default=os.environ.get("CSV_DATA_DIR") or _ds_cfg.get("csv_dir"))
     data_parser.add_argument("--qlib-dir", type=str,
-                        default=_ds_cfg.get("qlib_dir", "D:/trae/qlib_bin"))
+                        default=os.environ.get("QLIB_PROVIDER_URI") or _ds_cfg.get("qlib_dir"))
     data_parser.add_argument("--freq", type=str, default="day",
                         choices=["day", "week", "month"],
                         help="数据频率: day(日线) | week(周线) | month(月线)")
@@ -949,6 +950,10 @@ def cmd_data(args):
         download_full_history(sample=args.sample)
         logger.info("[步骤 1/1] ✓ 数据下载完成")
     elif args.convert:
+        if not args.csv_dir:
+            raise ValueError("未设置 CSV_DATA_DIR 环境变量，且配置文件中也未指定 data_source.csv_dir")
+        if not args.qlib_dir:
+            raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量，且配置文件中也未指定 data_source.qlib_dir")
         logger.info("[步骤 1/1] 开始 CSV → Qlib bin 格式转换 ...")
         logger.info("  → 源 CSV 目录: %s", args.csv_dir)
         logger.info("  → 目标 bin 目录: %s", args.qlib_dir)
@@ -959,6 +964,8 @@ def cmd_data(args):
         create_qlib_bin_data(Path(args.csv_dir), Path(args.qlib_dir), sample=args.sample, freq=args.freq)
         logger.info("[步骤 1/1] ✓ 数据转换完成")
     elif args.check:
+        if not args.qlib_dir:
+            raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量，且配置文件中也未指定 data_source.qlib_dir")
         logger.info("[步骤 1/1] 检查 Qlib bin 数据完整性 ...")
         qlib_dir = Path(args.qlib_dir)
         logger.info("  → 检查目录: %s", qlib_dir)
@@ -1157,7 +1164,9 @@ def cmd_regime(args):
     init_qlib_env(config)
     try:
         # 从 bin 文件直接读取基准数据
-        qlib_dir = _ds_cfg.get("qlib_dir", "D:/trae/qlib_bin")
+        qlib_dir = os.environ.get("QLIB_PROVIDER_URI") or _ds_cfg.get("qlib_dir")
+        if not qlib_dir:
+            raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量，且配置文件中也未指定 data_source.qlib_dir")
         benchmark_code = _regime_cfg.get("benchmark_code", "SH600000")
         benchmark_field = _regime_cfg.get("benchmark_field", "close")
         benchmark_path = Path(qlib_dir) / "features" / benchmark_code / f"{benchmark_field}.day.bin"

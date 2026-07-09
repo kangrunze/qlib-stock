@@ -25,6 +25,7 @@ import os
 import sys
 import struct
 import warnings
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -72,6 +73,35 @@ def parse_args():
 # ============================================================
 # 第一步: CSV 数据转换为 Qlib bin 格式
 # ============================================================
+def _fetch_csi300_constituents():
+    """通过 AKShare 获取当前时点沪深300真实成分股代码列表。
+
+    返回的是当前最新快照（非历史时点），用于替代原来 csi300.txt 复制全市场的错误实现。
+    历史时点成分股的动态接入留作后续任务。
+
+    Returns:
+        set[str]: 6 位数字股票代码集合；AKShare 不可用或调用失败时返回空集合（调用方需处理 fallback）。
+    """
+    try:
+        import akshare as ak
+    except ImportError:
+        logger.warning("akshare 未安装，无法获取沪深300真实成分股列表")
+        return set()
+    try:
+        df = ak.index_stock_cons_csindex(symbol="000300")
+        if df is None or len(df) == 0:
+            logger.warning("AKShare index_stock_cons_csindex 返回空数据")
+            return set()
+        # 成分券代码列可能叫 '成分券代码'，统一转为 6 位字符串
+        code_col = "成分券代码" if "成分券代码" in df.columns else df.columns[4]
+        codes = set(df[code_col].astype(str).str.zfill(6).tolist())
+        logger.info("AKShare 获取沪深300成分股: %d 只", len(codes))
+        return codes
+    except Exception as e:
+        logger.warning("获取沪深300成分股失败: %s", str(e)[:150])
+        return set()
+
+
 def discover_csv_files(csv_dir: Path, sample: int = None):
     """
     发现并收集 CSV 文件
@@ -379,22 +409,49 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None, freq
             f.write(f"{code}\t{start_date}\t{end_date}\n")
     logger.info("全量股票列表已写入: %s (%d 只)", all_instruments_path, len(codes_list))
 
-    # csi300.txt: 由于我们无法确定精确的 CSI300 成分股,
-    # 创建一个包含所有股票的 instruments 文件作为替代
-    # 用户可以后续替换为真实的 CSI300 列表
-    # Qlib 格式: instrument\tstart_datetime\tend_datetime (tab 分隔, 无 @type 头)
+    # csi300.txt: 接入 AKShare 获取当前时点真实沪深300成分股列表
+    # 仅当本地 CSV 数据中存在该成分股代码时才写入 csi300.txt
+    # TODO(后续任务): 接入历史时点（按月/季度快照）成分股数据，改为按交易日动态判断
     csi300_path = instruments_dir / "csi300.txt"
-    with open(csi300_path, "w", encoding="utf-8") as f:
-        for code in codes_list:
-            start_date = all_dates[0]
-            end_date = all_dates[-1]
-            if code in all_data:
+    csi300_codes = _fetch_csi300_constituents()
+    if csi300_codes:
+        # 取本地数据与真实成分股的交集
+        csi300_in_local = [c for c in codes_list if c in csi300_codes]
+        missing_in_local = [c for c in csi300_codes if c not in all_data]
+        with open(csi300_path, "w", encoding="utf-8") as f:
+            for code in csi300_in_local:
                 earliest = all_data[code]["datetime"].min()
                 latest = all_data[code]["datetime"].max()
                 start_date = pd.Timestamp(earliest).strftime("%Y-%m-%d")
                 end_date = pd.Timestamp(latest).strftime("%Y-%m-%d")
-            f.write(f"{code}\t{start_date}\t{end_date}\n")
-    logger.info("CSI300 instruments 已写入: %s", csi300_path)
+                f.write(f"{code}\t{start_date}\t{end_date}\n")
+        logger.warning(
+            "⚠ 当前 csi300.txt 使用的是静态的当前时点成分股列表（AKShare %s 快照），"
+            "不是历史动态时点成分股。早期年份的回测可能包含'未来才纳入指数'的股票，"
+            "存在一定的成分股穿越风险，待接入历史时点成分股数据后修正。",
+            datetime.now().strftime("%Y-%m-%d")
+        )
+        logger.info(
+            "CSI300 instruments 已写入: %s (%d 只真实成分股, 本地缺失 %d 只)",
+            csi300_path, len(csi300_in_local), len(missing_in_local)
+        )
+    else:
+        # AKShare 不可用时退化为全市场（保持原有行为，但明确警告）
+        logger.warning(
+            "⚠ AKShare 不可用或获取沪深300成分股失败，csi300.txt 退化为全市场股票列表。"
+            "这会导致 instruments:'csi300' 的配置实际跑全市场，请尽快修复数据源。"
+        )
+        with open(csi300_path, "w", encoding="utf-8") as f:
+            for code in codes_list:
+                start_date = all_dates[0]
+                end_date = all_dates[-1]
+                if code in all_data:
+                    earliest = all_data[code]["datetime"].min()
+                    latest = all_data[code]["datetime"].max()
+                    start_date = pd.Timestamp(earliest).strftime("%Y-%m-%d")
+                    end_date = pd.Timestamp(latest).strftime("%Y-%m-%d")
+                f.write(f"{code}\t{start_date}\t{end_date}\n")
+        logger.info("CSI300 instruments 已写入(fallback 全市场): %s (%d 只)", csi300_path, len(codes_list))
 
     # 写入 st marking（用于标记 ST 股票，这里全部标记为正常）
     st_path = instruments_dir / "st.txt"
@@ -414,6 +471,12 @@ def create_qlib_bin_data(csv_dir: Path, qlib_dir: Path, sample: int = None, freq
                         indent, os.path.basename(root), dir_count, file_count)
 
     logger.info("CSV -> Qlib bin 转换完成!")
+
+    # 生存者偏差警告（Task 4）
+    logger.warning(
+        "⚠ 当前股票池不包含历史退市股票，长周期（5年以上）回测收益可能被系统性高估，"
+        "这一点在解读回测结果时必须考虑"
+    )
 
 
 # ============================================================

@@ -183,22 +183,48 @@ def calculate_factor_returns(
 def attribution_report(
     decomposition: pd.DataFrame,
     n_periods: int = 252,
-) -> str:
-    """生成收益归因分析的可读报告。
+    label_horizon: int = 20,
+) -> Dict:
+    """生成收益归因分析的可读报告，并接入 Newey-West 显著性检验。
+
+    对选股 Alpha 逐期收益序列做 Newey-West 调整后的 t 检验，
+    处理日度收益序列的自相关，避免高估显著性。
 
     Args:
         decomposition: from decompose_excess_return()
         n_periods: 年化周期数（默认 252 个交易日）
+        label_horizon: 标签前瞻天数，用于 Newey-West 滞后阶数
 
     Returns:
-        格式化的报告字符串
+        dict with keys:
+            - report: 格式化的报告字符串
+            - annualized: 各列年化收益 Series
+            - significance: Newey-West 检验结果 dict（对 alpha 序列）
     """
     if decomposition.empty:
-        return "收益归因分析: 无可用数据"
+        return {"report": "收益归因分析: 无可用数据", "annualized": pd.Series(), "significance": {}}
 
     # 年化各列
     style_cols = [c for c in decomposition.columns if c.startswith("style_")]
     annualized = decomposition.mean() * n_periods
+
+    # 对选股 Alpha 逐期收益做 Newey-West 显著性检验
+    significance = {}
+    alpha_series = decomposition.get("alpha")
+    if alpha_series is not None and len(alpha_series.dropna()) > 5:
+        try:
+            from research.significance import newey_west_test
+            significance = newey_west_test(
+                alpha_series.dropna(),
+                max_lags=label_horizon,
+            )
+        except Exception as e:
+            logger.warning("Newey-West 检验失败: %s", e)
+            significance = {}
+
+    t_nw = significance.get("t_nw")
+    p_nw = significance.get("p_value_nw")
+    sig = significance.get("significant")
 
     lines = [
         "=" * 60,
@@ -218,6 +244,19 @@ def attribution_report(
         factor_name = col.replace("style_", "")
         lines.append(f"    {factor_name:<20} {annualized.get(col, 0):>8.4%}")
 
+    # 因子收益显著性（Newey-West 检验）
+    lines.append("")
+    lines.append("-" * 60)
+    if t_nw is not None and p_nw is not None:
+        sig_str = "是" if sig else "否"
+        lines.append(
+            f"  因子收益显著性: t_NW={t_nw:.2f}, p={p_nw:.3f}, 是否显著: {sig_str}"
+        )
+        lines.append(f"  (Newey-West 调整, 滞后阶数={significance.get('max_lags', '?')}, "
+                     f"样本数={significance.get('n_samples', '?')})")
+    else:
+        lines.append("  因子收益显著性: 样本不足，无法检验")
+
     # 判断 Alpha 是否显著
     alpha = annualized.get("alpha", 0)
     style_total = annualized.get("style_total", 0)
@@ -236,8 +275,16 @@ def attribution_report(
                 "  ⚠ 结论: 超额收益主要由风格暴露驱动（Alpha={:.0%}），"
                 "策略可能是不自知的风格因子押注".format(alpha_ratio)
             )
+        # 如果 Alpha 统计上不显著，追加警告
+        if sig is False:
+            lines.append("  ⚠ 注意: 选股 Alpha 未通过 Newey-West 显著性检验，"
+                         "不应过度解读其正贡献")
     else:
         lines.append("    超额收益接近零，归因分析参考价值有限")
 
     lines.append("=" * 60)
-    return "\n".join(lines)
+    return {
+        "report": "\n".join(lines),
+        "annualized": annualized,
+        "significance": significance,
+    }

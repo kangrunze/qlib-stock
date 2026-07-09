@@ -8,6 +8,7 @@ import os
 import time
 import random
 import logging
+import threading
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Optional, Callable
@@ -109,15 +110,23 @@ def _ensure_dir(path: str) -> str:
     return path
 
 
+# 模块级限流锁（跨线程共享，确保 _rate_limit 在多线程下真正串行）
+_rate_limit_lock = threading.Lock()
+
+
 def _rate_limit(min_interval: float = 0.3):
-    """请求间速率限制"""
-    if not hasattr(_rate_limit, "_last_call"):
-        _rate_limit._last_call = 0.0
-    now = time.time()
-    elapsed = now - _rate_limit._last_call
-    if elapsed < min_interval:
-        time.sleep(min_interval - elapsed)
-    _rate_limit._last_call = time.time()
+    """请求间速率限制（线程安全）。
+
+    使用模块级 _rate_limit_lock 保护 _last_call 状态，
+    确保多线程并发调用时真正按 min_interval 间隔串行执行，
+    而非多个线程同时读写 _last_call 导致限流失效。
+    """
+    with _rate_limit_lock:
+        now = time.time()
+        elapsed = now - getattr(_rate_limit, "_last_call", 0.0)
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        _rate_limit._last_call = time.time()
 
 
 class AKShareClient:
@@ -185,8 +194,15 @@ class AKShareClient:
         """
         获取A股全量股票列表
 
+        ⚠ 已知限制（生存者偏差）:
+            本函数通过 ak.stock_info_a_code_name 获取的是「当前在市」的股票列表，
+            历史上已退市的股票（如 600001 邯郸钢铁、000003 PT金田A 等）永远不会出现。
+            这导致长周期（5年以上）回测会系统性高估收益，尤其是熊市尾部的退市股缺失，
+            在解读回测结果时必须考虑此偏差。
+            如需退市股列表，请调用 get_delisted_stock_list()。
+
         Returns:
-            DataFrame, 列: code, name
+            DataFrame, 列: code, name, is_st
         """
         logger.info("正在获取A股全量股票列表...")
         df = self._do_with_retry(self.ak.stock_info_a_code_name)
@@ -203,6 +219,65 @@ class AKShareClient:
         logger.info("获取到 %d 只股票", len(df))
         return df
 
+    def get_delisted_stock_list(self) -> pd.DataFrame:
+        """
+        获取A股历史退市股票列表。
+
+        通过 AKShare 的 stock_info_sh_delist（上交所退市）和 stock_info_sz_delist（深交所退市）
+        两个接口合并获取。返回包含退市日期的 DataFrame，可用于补全生存者偏差缺失的数据。
+
+        Returns:
+            DataFrame, 列: code, name, list_date, delist_date, exchange
+            任一接口失败时跳过该交易所并继续；两个接口都失败时返回空 DataFrame。
+        """
+        logger.info("正在获取A股退市股票列表...")
+        frames = []
+
+        # 上交所退市股
+        try:
+            df_sh = self._do_with_retry(self.ak.stock_info_sh_delist)
+            if df_sh is not None and len(df_sh) > 0:
+                df_sh = df_sh.rename(columns={
+                    "公司代码": "code",
+                    "公司简称": "name",
+                    "上市日期": "list_date",
+                    "暂停上市日期": "delist_date",
+                })
+                df_sh["code"] = df_sh["code"].astype(str).str.zfill(6)
+                df_sh["exchange"] = "SSE"
+                frames.append(df_sh)
+                logger.info("上交所退市股: %d 只", len(df_sh))
+        except Exception as e:
+            logger.warning("获取上交所退市股失败: %s", str(e)[:120])
+
+        # 深交所退市股
+        try:
+            df_sz = self._do_with_retry(self.ak.stock_info_sz_delist)
+            if df_sz is not None and len(df_sz) > 0:
+                df_sz = df_sz.rename(columns={
+                    "证券代码": "code",
+                    "证券简称": "name",
+                    "上市日期": "list_date",
+                    "终止上市日期": "delist_date",
+                })
+                df_sz["code"] = df_sz["code"].astype(str).str.zfill(6)
+                df_sz["exchange"] = "SZSE"
+                frames.append(df_sz)
+                logger.info("深交所退市股: %d 只", len(df_sz))
+        except Exception as e:
+            logger.warning("获取深交所退市股失败: %s", str(e)[:120])
+
+        if not frames:
+            logger.warning(
+                "当前数据源无法获取退市股列表（上交所和深交所接口均失败），"
+                "此功能待接入其他数据源（如东方财富/同花顺）后实现"
+            )
+            return pd.DataFrame(columns=["code", "name", "list_date", "delist_date", "exchange"])
+
+        result = pd.concat(frames, ignore_index=True)
+        logger.info("退市股列表合计: %d 只", len(result))
+        return result
+
     # ==================== 日线数据下载 ====================
 
     def download_daily_data(
@@ -214,6 +289,12 @@ class AKShareClient:
     ) -> pd.DataFrame:
         """
         下载单只股票日线数据（前复权）
+
+        ⚠ is_st 标记的已知限制:
+            is_st 基于股票当前名称判断（akshare 返回的 name 是当前最新名称），
+            应用于整段历史数据。对于曾经ST后来摘帽（或反之）的股票，
+            历史区间的 is_st 标记不准确。这是已知限制，
+            待接入历史ST状态表后修正。
 
         Args:
             symbol: 股票代码，如 "000001"
@@ -263,17 +344,25 @@ class AKShareClient:
         # 添加派生列
         df["code"] = symbol
         if "name" in df.columns:
+            # is_st 基于当前名称判断整段历史（见 docstring 中的已知限制说明）
             df["is_st"] = df["name"].str.contains("ST", na=False)
         else:
-            df["is_st"] = False
+            # 无 name 列时置 NaN，不硬编码 False
+            df["is_st"] = pd.NA
 
-        # 标记停牌: volume==0 或 close没有变化
-        if "volume" in df.columns and "close" in df.columns:
-            df["is_suspended"] = (df["volume"] == 0) | (
-                df["close"].diff() == 0
-            )
+        # 停牌判定：同时满足 volume==0 且 amount==0 才判定为停牌
+        #   正常交易日即使收盘价和前一天一样，成交量和成交额几乎不可能同时为0
+        #   退化方案：若无 amount 列，退回只用 volume==0
+        if "volume" in df.columns:
+            vol_zero = (df["volume"] == 0) | df["volume"].isna()
+            if "amount" in df.columns:
+                amt_zero = (df["amount"] == 0) | df["amount"].isna()
+                df["is_suspended"] = vol_zero & amt_zero
+            else:
+                # 退化方案：无 amount 列，仅用 volume==0（可能误判平收日）
+                df["is_suspended"] = vol_zero
         else:
-            df["is_suspended"] = False
+            df["is_suspended"] = pd.NA
 
         # 确保date列是datetime类型
         if "date" in df.columns:
@@ -288,9 +377,14 @@ class AKShareClient:
         end: Optional[str] = None,
         save: bool = True,
         show_progress: bool = True,
+        save_raw: bool = True,
     ) -> Dict[str, pd.DataFrame]:
         """
         多线程批量下载日线数据
+
+        同时下载前复权(qfq)和不复权(raw)两份数据：
+          - qfq 用于因子计算（保存为 {code}.parquet）
+          - raw  用于人工核查和后续复权因子计算（保存为 {code}_raw.parquet）
 
         Args:
             codes: 股票代码列表
@@ -298,29 +392,39 @@ class AKShareClient:
             end: 结束日期
             save: 是否保存为Parquet文件
             show_progress: 是否显示进度条
+            save_raw: 是否同时下载并保存不复权数据（默认 True）
 
         Returns:
-            Dict[str, DataFrame]: code->DataFrame映射
+            Dict[str, DataFrame]: code->DataFrame映射（前复权数据）
         """
         from tqdm import tqdm
 
         results: Dict[str, pd.DataFrame] = {}
         failed: List[str] = []
 
-        logger.info("开始批量下载 %d 只股票日线数据...", len(codes))
+        logger.info("开始批量下载 %d 只股票日线数据 (qfq%s)...",
+                    len(codes), "+raw" if save_raw else "")
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
                 executor.submit(self.download_daily_data, code, start, end, "qfq"): code
                 for code in codes
             }
+            # 若需要 raw，额外提交一批不复权下载任务
+            raw_futures = {}
+            if save_raw:
+                raw_futures = {
+                    executor.submit(self.download_daily_data, code, start, end, ""): code
+                    for code in codes
+                }
 
             pbar = tqdm(
-                total=len(codes),
+                total=len(codes) + (len(codes) if save_raw else 0),
                 desc="下载日线数据",
                 disable=not show_progress,
                 ncols=100,
             )
+            # 收集 qfq 结果
             for future in as_completed(futures):
                 code = futures[future]
                 try:
@@ -328,12 +432,23 @@ class AKShareClient:
                     if df is not None and len(df) > 0:
                         results[code] = df
                         if save:
-                            self._save_parquet(code, df)
+                            self._save_parquet(code, df, adjust="qfq")
                     else:
                         failed.append(code)
                 except Exception as e:
-                    logger.error("下载失败 code=%s: %s", code, str(e)[:120])
+                    logger.error("下载失败 code=%s (qfq): %s", code, str(e)[:120])
                     failed.append(code)
+                pbar.update(1)
+            # 收集 raw 结果
+            for future in as_completed(raw_futures):
+                code = raw_futures[future]
+                try:
+                    df = future.result()
+                    if df is not None and len(df) > 0 and save:
+                        self._save_parquet(code, df, adjust="")
+                except Exception as e:
+                    # raw 下载失败不影响主流程，仅记录 debug
+                    logger.debug("下载不复权数据失败 code=%s: %s", code, str(e)[:120])
                 pbar.update(1)
             pbar.close()
 
@@ -343,9 +458,18 @@ class AKShareClient:
         )
         return results
 
-    def _save_parquet(self, code: str, df: pd.DataFrame) -> str:
-        """保存单只股票数据为Parquet"""
-        filepath = self.parquet_dir / f"{code}.parquet"
+    def _save_parquet(self, code: str, df: pd.DataFrame, adjust: str = "qfq") -> str:
+        """保存单只股票数据为Parquet。
+
+        Args:
+            code: 股票代码
+            df: 日线 DataFrame
+            adjust: 复权类型，"qfq"=前复权, ""=不复权。
+                    qfq 保存为 {code}.parquet（兼容旧路径，用于因子计算）；
+                    不复权保存为 {code}_raw.parquet（用于人工核查和后续复权因子计算）。
+        """
+        suffix = "" if adjust == "qfq" else "_raw"
+        filepath = self.parquet_dir / f"{code}{suffix}.parquet"
         df.to_parquet(str(filepath), index=False)
         return str(filepath)
 
@@ -443,6 +567,12 @@ def get_stock_list() -> pd.DataFrame:
     """便捷获取股票列表"""
     client = AKShareClient()
     return client.get_stock_list()
+
+
+def get_delisted_stock_list() -> pd.DataFrame:
+    """便捷获取退市股票列表"""
+    client = AKShareClient()
+    return client.get_delisted_stock_list()
 
 
 def batch_download(codes: List[str], start: str, end: str) -> Dict[str, pd.DataFrame]:

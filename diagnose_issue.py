@@ -37,7 +37,10 @@ def main():
     # 初始化 Qlib
     print("\n[步骤 1] 初始化 Qlib...")
     try:
-        qlib.init(provider_uri="D:/trae/qlib_bin", region="cn")
+        provider_uri = os.environ.get("QLIB_PROVIDER_URI")
+        if not provider_uri:
+            raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量")
+        qlib.init(provider_uri=provider_uri, region="cn")
         print("✓ Qlib 初始化成功")
     except Exception as e:
         print(f"✗ Qlib 初始化失败: {e}")

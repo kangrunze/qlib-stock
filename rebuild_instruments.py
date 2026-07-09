@@ -7,8 +7,12 @@ import os
 from pathlib import Path
 
 def rebuild_instruments():
-    features_dir = Path(r"D:\trae\qlib_bin\features")
-    instruments_dir = Path(r"D:\trae\qlib_bin\instruments")
+    provider_uri = os.environ.get("QLIB_PROVIDER_URI")
+    if not provider_uri:
+        raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量")
+    qlib_root = Path(provider_uri)
+    features_dir = qlib_root / "features"
+    instruments_dir = qlib_root / "instruments"
     
     # Qlib instruments 文件格式: symbol\tstart_date\tend_date
     start_date = "2020-01-01"

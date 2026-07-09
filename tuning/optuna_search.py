@@ -44,7 +44,9 @@ def _init_qlib_once(config: dict):
 
     import qlib
     from qlib.constant import REG_CN
-    provider_uri = config.get("qlib", {}).get("provider_uri", "D:/trae/qlib_bin")
+    provider_uri = os.environ.get("QLIB_PROVIDER_URI") or config.get("qlib", {}).get("provider_uri")
+    if not provider_uri:
+        raise ValueError("未设置 QLIB_PROVIDER_URI 环境变量，且配置文件中也未指定 qlib.provider_uri")
     qlib.init(provider_uri=provider_uri, region=REG_CN)
 
     from qlib.config import C
