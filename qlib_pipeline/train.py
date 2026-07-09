@@ -191,10 +191,18 @@ def build_task(config: dict) -> dict:
     # Segments
     segments = config.get("dataset", {}).get("segments", {})
 
-    # Model — 使用 qlib_lgb 配置（Qlib 原生 LGBModel）
+    # Model — 使用 qlib_lgb 配置（Qlib 原生 LGBModel 或 RankLGBModel）
     model_cfg = config.get("qlib_lgb", create_rank_model())
 
+    # loss="rank" 时自动路由到 RankLGBModel（绕过 LGBModel 的 loss 白名单校验）
     kwargs = model_cfg.get("kwargs", {})
+    if kwargs.get("loss") == "rank":
+        model_cfg = {
+            "class": "RankLGBModel",
+            "module_path": "qlib_pipeline.model",
+            "kwargs": kwargs,
+        }
+        logger.info("检测到 loss=rank，使用 RankLGBModel (LambdaRank)")
     # 确保 LightGBM 随机种子生效（可复现训练）
     seed = config.get("experiment", {}).get("random_seed", 42)
     kwargs.setdefault("seed", seed)

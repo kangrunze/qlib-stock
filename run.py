@@ -367,12 +367,7 @@ def cmd_train(args):
     config = apply_cli_overrides(config, args)
     _log_config_summary(config)
 
-    # ── 数据预检 ──
-    if not _check_data_availability(config):
-        logger.error("数据预检未通过，流程终止。请先准备数据后再运行。")
-        logger.error("  数据准备命令: python run.py data --convert")
-        return
-
+    # ── 先初始化 Qlib，再做依赖 Qlib 日历的数据预检 ──
     try:
         logger.info("[步骤 1/3] 初始化 Qlib 环境 ...")
         init_qlib_env(config)
@@ -380,6 +375,12 @@ def cmd_train(args):
     except Exception as e:
         logger.error("Qlib 环境初始化失败: %s", e)
         logger.error("  → 请检查 workflow_config.yaml 中的 qlib.provider_uri 路径")
+        return
+
+    # ── 数据预检（依赖 Qlib 已初始化，读取日历校验时间范围）──
+    if not _check_data_availability(config):
+        logger.error("数据预检未通过，流程终止。请先准备数据后再运行。")
+        logger.error("  数据准备命令: python run.py data --convert")
         return
 
     try:
@@ -739,18 +740,19 @@ def cmd_full(args):
     config = apply_cli_overrides(config, args)
     _log_config_summary(config)
 
-    # ── 数据预检 ──
-    if not _check_data_availability(config):
-        logger.error("数据预检未通过，流程终止。请先准备数据后再运行。")
-        logger.error("  数据准备命令: python run.py data --convert")
-        return
-
+    # ── 先初始化 Qlib，再做依赖 Qlib 日历的数据预检 ──
     try:
         init_qlib_env(config)
     except Exception as e:
         logger.error("Qlib 环境初始化失败: %s", e)
         logger.error("  → 请检查 workflow_config.yaml 中的 qlib.provider_uri 路径是否正确")
         logger.error("  → 请确认已运行: python run.py data --convert")
+        return
+
+    # ── 数据预检（依赖 Qlib 已初始化，读取日历校验时间范围）──
+    if not _check_data_availability(config):
+        logger.error("数据预检未通过，流程终止。请先准备数据后再运行。")
+        logger.error("  数据准备命令: python run.py data --convert")
         return
 
     handler = config.get("dataset", {}).get("handler", "Alpha158")

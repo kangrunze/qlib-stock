@@ -179,14 +179,15 @@ dataset:
 #
 # loss 函数选择指南：
 #   mse  — 回归模式，预测具体收益率数值，简单直观
-#   rank — 排序模式（Lambdarank），优化股票排序而非绝对值，选股推荐首选
+#   rank — LambdaRank 排序模式，优化股票排序而非绝对值（通过 RankLGBModel 子类实现，
+#          绕过 Qlib 0.9.7 LGBModel 只支持 mse/binary 的限制）
 #   命令行覆盖: python run.py full --loss rank
 # =============================================================================
 qlib_lgb:
-  class: "LGBModel"                        # Qlib 模型类名
-  module_path: "qlib.contrib.model.gbdt"   # Qlib 模块路径
+  class: "LGBModel"                        # Qlib 模型类名（loss=rank 时自动切换为 RankLGBModel）
+  module_path: "qlib.contrib.model.gbdt"   # Qlib 模块路径（loss=rank 时自动切换为 qlib_pipeline.model）
   kwargs:
-    loss: "mse"                # ★ 损失函数: mse(回归) | rank(Lambdarank, 选股推荐)
+    loss: "mse"                # ★ 损失函数: mse(回归) | rank(LambdaRank 排序)
     colsample_bytree: 0.559360038123945   # 特征采样比例（初始值来自 Qlib 官方 Alpha158+LightGBM 基准示例配置，尚未针对本项目数据重新调优，可用 tuning/optuna_search.py 重新搜索）
     learning_rate: 0.016176235387725026      # 学习率（同上）
     subsample: 0.8405016192848853          # 样本采样比例（同上）

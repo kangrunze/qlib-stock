@@ -44,20 +44,27 @@ logger = logging.getLogger(__name__)
 def _train_one(config: dict, overrides: dict) -> Tuple[object, object, dict]:
     """用给定的 config + overrides 训练一个模型。
 
+    复用 train.py:build_task() 构建完整的 Qlib task dict，确保标签表达式、
+    CSMedianSubtract 处理器、loss=rank 路由等逻辑与主管线完全一致。
+
     Args:
         config: 基础 workflow config
         overrides: 要覆盖的配置项，支持嵌套 key 如 "qlib_lgb.kwargs.loss"
+                   标签切换用 "labels.primary": "ret_60d"（非 qlib_lgb.kwargs.label）
 
     Returns:
         (model, dataset, merged_config)
     """
     from qlib.utils import init_instance_by_config
+    from qlib_pipeline.train import build_task
 
     merged = copy.deepcopy(config)
     for key, val in overrides.items():
         _set_nested(merged, key, val)
 
-    task = _build_task_from_config(merged)
+    # 直接复用 train.py 的 build_task，确保标签表达式、CSMedianSubtract、
+    # RankLGBModel 路由等逻辑与主管线一致
+    task = build_task(merged)
     dataset = init_instance_by_config(task["dataset"])
     model = init_instance_by_config(task["model"])
     model.fit(dataset)
@@ -70,39 +77,6 @@ def _set_nested(d: dict, key: str, val):
     for p in parts[:-1]:
         d = d.setdefault(p, {})
     d[parts[-1]] = val
-
-
-def _build_task_from_config(config: dict) -> dict:
-    """从 config 构建 Qlib task dict（复用 train.py 逻辑）"""
-    handler = config.get("dataset", {}).get("handler", "Alpha158")
-    handler_cfg = {
-        "class": handler,
-        "module_path": "qlib.contrib.data.handler",
-        "kwargs": config.get("data_handler", {}).copy(),
-    }
-
-    segments = config.get("dataset", {}).get("segments", {})
-
-    model_cfg = config.get("qlib_lgb", {})
-    kwargs = model_cfg.get("kwargs", {}).copy()
-    seed = config.get("experiment", {}).get("random_seed", 42)
-    kwargs.setdefault("seed", seed)
-
-    return {
-        "model": {
-            "class": model_cfg.get("class", "LGBModel"),
-            "module_path": model_cfg.get("module_path", "qlib.contrib.model.gbdt"),
-            "kwargs": kwargs,
-        },
-        "dataset": {
-            "class": "DatasetH",
-            "module_path": "qlib.data.dataset",
-            "kwargs": {
-                "handler": handler_cfg,
-                "segments": segments,
-            },
-        },
-    }
 
 
 def _eval_model(model, dataset, label_horizon: int = 20) -> dict:
@@ -259,7 +233,7 @@ def experiment_e3_label_horizons(config: dict) -> dict:
         label = f"ret_{horizon}d"
         logger.info("  训练 %s ...", label)
         try:
-            model, ds, _ = _train_one(config, {"qlib_lgb.kwargs.label": [label]})
+            model, ds, _ = _train_one(config, {"labels.primary": label})
             metrics = _eval_model(model, ds, label_horizon=horizon)
             results[label] = metrics
             logger.info("  %s: IC=%.6f, ICIR=%.4f, NW_sig=%s",
@@ -422,9 +396,26 @@ def experiment_e5_ensemble(config: dict) -> dict:
                     ensemble_ic_mean, ensemble_icir, ensemble_ic_std)
 
         single_std = metrics_single.get("ic_std", 0) or 0
+        single_ic = metrics_single.get("ic_mean") or 0
+        single_icir = metrics_single.get("icir") or 0
         if ensemble_ic_std and single_std > 0:
             if ensemble_ic_std < single_std:
-                conclusion = f"集成降低 IC 标准差 {single_std:.4f} → {ensemble_ic_std:.4f}，方差确实降低"
+                # 方差降低，但需综合判断 ICIR 是否真的更优
+                if ensemble_icir is not None and single_icir > 0:
+                    if ensemble_icir >= single_icir:
+                        conclusion = (
+                            f"集成降低 IC 标准差 {single_std:.4f} → {ensemble_ic_std:.4f}，"
+                            f"且 ICIR 提升 {single_icir:.4f} → {ensemble_icir:.4f}，集成综合更优"
+                        )
+                    else:
+                        conclusion = (
+                            f"集成降低 IC 标准差 {single_std:.4f} → {ensemble_ic_std:.4f}，"
+                            f"但 IC 均值从 {single_ic:.6f} 降至 {ensemble_ic_mean:.6f}，"
+                            f"ICIR 从 {single_icir:.4f} 降至 {ensemble_icir:.4f}，"
+                            f"综合来看当前集成方式不占优"
+                        )
+                else:
+                    conclusion = f"集成降低 IC 标准差 {single_std:.4f} → {ensemble_ic_std:.4f}，但 ICIR 无法比较"
             else:
                 conclusion = "集成未降低 IC 标准差，可能不需要集成"
         else:
@@ -459,21 +450,13 @@ def experiment_e6_ret_vs_xsret(config: dict) -> dict:
     logger.info("E6: ret_60d vs xs_ret_60d (primary 标签对比)")
     logger.info("=" * 60)
 
-    # 检查 xs_ret_60d 是否可用（使用 config 中的数据时间范围）
-    try:
-        from qlib.data import D
-        test_stock = "SH600000"
-        # 使用 config 中配置的测试期起始日期，而非硬编码
-        segments = config.get("dataset", {}).get("segments", {})
-        test_start = (segments.get("test") or [None])[0] or "2025-01-01"
-        xs_data = D.features([test_stock], ["xs_ret_60d"], start_time=test_start, end_time=test_start)
-        has_xs = xs_data is not None and not xs_data.empty
-    except Exception:
-        has_xs = False
+    # 注意: xs_ret_60d 不是 bin 数据里的字段，而是通过 _build_label_config 生成
+    # 基础收益率表达式 + CSMedianSubtract 处理器动态计算的（见 train.py:build_task）。
+    # 不需要预检查数据可用性，build_task 会自动处理。
 
     # ret_60d (基准)
     logger.info("  训练 ret_60d ...")
-    model_ret, ds_ret, _ = _train_one(config, {"qlib_lgb.kwargs.label": ["ret_60d"]})
+    model_ret, ds_ret, _ = _train_one(config, {"labels.primary": "ret_60d"})
     metrics_ret = _eval_model(model_ret, ds_ret, label_horizon=60)
     from qlib_pipeline.ic_stability import get_ic_series
     ic_ret = get_ic_series(model_ret, ds_ret)
@@ -482,23 +465,23 @@ def experiment_e6_ret_vs_xsret(config: dict) -> dict:
                 metrics_ret.get("ic_std"), metrics_ret.get("nw_significant"))
 
     # xs_ret_60d
-    if not has_xs:
-        logger.info("  ⏭ xs_ret_60d 数据不可用（需要 Phase A 或自定义标签计算），跳过对比")
+    logger.info("  训练 xs_ret_60d ...")
+    try:
+        model_xs, ds_xs, _ = _train_one(config, {"labels.primary": "xs_ret_60d"})
+        metrics_xs = _eval_model(model_xs, ds_xs, label_horizon=60)
+        ic_xs = get_ic_series(model_xs, ds_xs)
+        logger.info("  xs_ret_60d: IC=%.6f, ICIR=%.4f, IC_std=%.6f, NW_sig=%s",
+                    metrics_xs.get("ic_mean"), metrics_xs.get("icir"),
+                    metrics_xs.get("ic_std"), metrics_xs.get("nw_significant"))
+    except Exception as e:
+        logger.error("  xs_ret_60d 训练失败: %s", e)
         return {
             "skipped": True,
-            "reason": "xs_ret_60d 标签数据不可用",
+            "reason": f"xs_ret_60d 训练失败: {e}",
             "ret_60d_icir": metrics_ret.get("icir"),
             "ret_60d_ic_mean": metrics_ret.get("ic_mean"),
-            "conclusion": "待 xs_ret_60d 数据就绪后重跑，当前仅 ret_60d 可用",
+            "conclusion": "xs_ret_60d 训练失败，待修复后重跑",
         }
-
-    logger.info("  训练 xs_ret_60d ...")
-    model_xs, ds_xs, _ = _train_one(config, {"qlib_lgb.kwargs.label": ["xs_ret_60d"]})
-    metrics_xs = _eval_model(model_xs, ds_xs, label_horizon=60)
-    ic_xs = get_ic_series(model_xs, ds_xs)
-    logger.info("  xs_ret_60d: IC=%.6f, ICIR=%.4f, IC_std=%.6f, NW_sig=%s",
-                metrics_xs.get("ic_mean"), metrics_xs.get("icir"),
-                metrics_xs.get("ic_std"), metrics_xs.get("nw_significant"))
 
     result = _compare_with_nw("ret_60d", metrics_ret, "xs_ret_60d", metrics_xs,
                               ic_ret, ic_xs)
@@ -530,77 +513,50 @@ def experiment_e7_updown_diagnostic(config: dict) -> dict:
     logger.info("E7: up_down_60d 方向判断诊断")
     logger.info("=" * 60)
 
-    # 检查 up_down_60d 是否可用（使用 config 中的数据时间范围）
-    try:
-        from qlib.data import D
-        test_stock = "SH600000"
-        segments = config.get("dataset", {}).get("segments", {})
-        test_start = (segments.get("test") or [None])[0] or "2025-01-01"
-        ud_data = D.features([test_stock], ["up_down_60d"], start_time=test_start, end_time=test_start)
-        has_ud = ud_data is not None and not ud_data.empty
-    except Exception:
-        has_ud = False
+    # 注意: up_down_60d 不是 bin 数据里的字段，而是通过 _build_label_config 生成的
+    # If(Ref($close, -N)/Ref($close, -1) > 0, 1, 0) 表达式动态计算的。
+    # 这里用 up_down_60d 作为 label 训练一个分类模型，然后在测试集上评估方向准确率。
 
-    if not has_ud:
-        logger.info("  ⏭ up_down_60d 数据不可用，跳过诊断")
+    # 训练 up_down_60d 模型（方向分类）
+    logger.info("  训练 up_down_60d 模型 ...")
+    try:
+        model, ds, _ = _train_one(config, {"labels.primary": "up_down_60d"})
+    except Exception as e:
+        logger.error("  up_down_60d 训练失败: %s", e)
         return {
             "skipped": True,
-            "reason": "up_down_60d 标签数据不可用",
-            "conclusion": "待 up_down_60d 数据就绪后重跑",
+            "reason": f"up_down_60d 训练失败: {e}",
+            "conclusion": "待修复后重跑",
         }
-
-    # 训练 ret_60d 模型
-    logger.info("  训练 ret_60d 模型 ...")
-    model, ds, _ = _train_one(config, {"qlib_lgb.kwargs.label": ["ret_60d"]})
 
     # 在测试集上预测
     test_data = ds.prepare("test", col_set=["feature", "label"])
     preds = model.predict(ds, segment="test")
 
-    # 获取 up_down_60d 标签值
-    try:
-        from qlib.data import D
-        stocks = test_data["feature"].index.get_level_values("instrument").unique()
-        dates = test_data["feature"].index.get_level_values("datetime").unique()
-        ud_values = D.features(list(stocks), ["up_down_60d"],
-                               start_time=str(dates[0]), end_time=str(dates[-1]))
-    except Exception as e:
-        logger.warning("  无法加载 up_down_60d 标签: %s", e)
-        return {
-            "skipped": True,
-            "reason": f"up_down_60d 加载失败: {e}",
-            "conclusion": "待数据修复后重跑",
-        }
-
-    if ud_values is None or ud_values.empty:
-        return {
-            "skipped": True,
-            "reason": "up_down_60d 数据为空",
-            "conclusion": "待数据就绪后重跑",
-        }
+    # test_data["label"] 就是 up_down_60d 的值（0 或 1），由 handler 自动计算
+    labels = test_data["label"]
+    if labels.ndim > 1:
+        labels = labels.iloc[:, 0]
 
     # 对齐预测和标签
-    pred_series = pd.Series(preds, index=test_data["feature"].index)
-    from qlib_pipeline.ic_stability import compute_daily_rank_ic
+    pred_series = pd.Series(preds, index=test_data["feature"].index) if not isinstance(preds, pd.Series) else preds
 
     # 计算逐日方向准确率
+    dates = test_data["feature"].index.get_level_values(0).unique()
     daily_accuracy = {}
     for date in dates:
         try:
             pred_date = pred_series.loc[date]
-            ud_date = ud_values.loc[date].iloc[:, 0] if ud_values.shape[1] > 0 else None
-            if ud_date is None or ud_date.empty:
-                continue
-
-            common = pred_date.index.intersection(ud_date.index)
+            label_date = labels.loc[date]
+            common = pred_date.index.intersection(label_date.index)
             if len(common) < 10:
                 continue
 
             p = pred_date.loc[common]
-            u = ud_date.loc[common]
+            u = label_date.loc[common]
 
-            # 方向判断: 预测值 > 0 视为看涨，实际 up_down > 0 为涨
-            pred_dir = (p > 0).astype(int)
+            # 方向判断: 预测值中位数以上视为看涨（排序模型），实际 up_down=1 为涨
+            pred_dir = (p > p.median()).astype(int)
             true_dir = (u > 0).astype(int)
             acc = (pred_dir == true_dir).mean()
             daily_accuracy[str(date)] = float(acc)
