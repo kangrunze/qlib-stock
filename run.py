@@ -90,6 +90,115 @@ logging.basicConfig(
 logger = logging.getLogger("run")
 
 
+# ---- A股分板块涨跌停 Exchange 注入 ----
+# Qlib 原生 Exchange 的 limit_threshold 是单一标量，无法区分
+# 主板(±10%)/创业板(±20%)/科创板(±20%)/北交所(±30%)。
+# 通过 context manager 临时 monkey-patch get_exchange，
+# 使回测使用 PerStockLimitExchange 按板块区分涨跌停阈值。
+from contextlib import contextmanager
+
+
+@contextmanager
+def _a_stock_exchange_context():
+    """临时将 Qlib backtest 的 get_exchange 替换为 A 股分板块涨跌停 Exchange。
+
+    patch 只在 with 块内生效，退出后自动还原。
+    get_strategy_executor 内部通过模块级属性访问 get_exchange，
+    因此 patch 能影响整条调用链：backtest → get_strategy_executor → get_exchange。
+    """
+    import qlib.backtest as _bt_mod
+    _orig_get_exchange = _bt_mod.get_exchange
+
+    def _patched_get_exchange(exchange=None, **kwargs):
+        if exchange is not None:
+            # 用户显式传入了 exchange 配置，走原始路径
+            return _orig_get_exchange(exchange=exchange, **kwargs)
+        # exchange=None 时，用 PerStockLimitExchange 替代标准 Exchange
+        from qlib_pipeline.a_stock_exchange import PerStockLimitExchange
+        return PerStockLimitExchange(**kwargs)
+
+    _bt_mod.get_exchange = _patched_get_exchange
+    try:
+        yield
+    finally:
+        _bt_mod.get_exchange = _orig_get_exchange
+
+
+def _load_industry_map() -> dict:
+    """加载行业映射 {qlib_code: industry_name}。
+
+    优先从 data/industry/industry_classification.parquet 加载；
+    文件不存在时返回空 dict（IndustryConstrainedTopkStrategy 会回退到
+    无行业约束模式，行为与 TopkDropoutStrategy 完全一致）。
+
+    用户可通过 `python run.py data --download` 下载行业数据。
+    """
+    industry_file = _PROJECT_ROOT / "data" / "industry" / "industry_classification.parquet"
+    if not industry_file.exists():
+        logger.debug("行业分类文件不存在: %s, 行业约束将不生效", industry_file)
+        return {}
+
+    try:
+        df = pd.read_parquet(str(industry_file))
+        # 期望列: code, industry
+        code_col = "code" if "code" in df.columns else df.columns[0]
+        industry_col = "industry" if "industry" in df.columns else df.columns[1]
+
+        def _to_qlib_code(code):
+            code = str(code).strip().zfill(6)
+            if code.startswith(("60", "68", "90", "11", "13")):
+                return f"sh{code}"
+            elif code.startswith(("00", "30", "12", "15")):
+                return f"sz{code}"
+            elif code.startswith(("83", "87", "43", "92", "88")):
+                return f"bj{code}"
+            return f"sh{code}"
+
+        industry_map = {
+            _to_qlib_code(row[code_col]): str(row[industry_col])
+            for _, row in df.iterrows()
+            if pd.notna(row.get(code_col)) and pd.notna(row.get(industry_col))
+        }
+        logger.info("加载行业映射: %d 条", len(industry_map))
+        return industry_map
+    except Exception as e:
+        logger.warning("加载行业映射失败: %s, 行业约束将不生效", e)
+        return {}
+
+
+def _inject_industry_strategy(port_config: dict) -> dict:
+    """将行业中性化策略注入回测配置。
+
+    当行业映射数据可用时，把回测策略从 TopkDropoutStrategy 切换为
+    IndustryConstrainedTopkStrategy（research.portfolio_constructor），
+    并注入 industry_map + max_industry_weight。
+
+    当行业映射不可用时，保持原始 TopkDropoutStrategy 配置不变（安全回退）。
+
+    Args:
+        port_config: backtest 配置段（会被原地修改）
+
+    Returns:
+        修改后的 port_config
+    """
+    industry_map = _load_industry_map()
+    if not industry_map:
+        logger.info("行业映射为空，使用标准 TopkDropoutStrategy（无行业约束）")
+        return port_config
+
+    strat_cfg = port_config.setdefault("strategy", {})
+    strat_cfg["class"] = "IndustryConstrainedTopkStrategy"
+    strat_cfg["module_path"] = "research.portfolio_constructor"
+    kwargs = strat_cfg.setdefault("kwargs", {})
+    kwargs["industry_map"] = industry_map
+    kwargs.setdefault("max_industry_weight", 0.25)
+    logger.info(
+        "行业中性化策略已启用: max_industry_weight=%.0f%%, 行业映射 %d 条",
+        kwargs["max_industry_weight"] * 100, len(industry_map),
+    )
+    return port_config
+
+
 def _make_run_dir(base_dir: str) -> str:
     """为每次运行创建带时间戳的独立子目录，防止输出覆盖。
 
@@ -264,8 +373,10 @@ def parse_args():
     tscv_parser = subparsers.add_parser("tscv", help="Purged K-Fold TSCV")
     tscv_parser.add_argument("--config", type=str, default=None)
     tscv_parser.add_argument("--n-splits", type=int, default=5)
-    tscv_parser.add_argument("--purge-days", type=int, default=5)
-    tscv_parser.add_argument("--embargo-days", type=int, default=0)
+    tscv_parser.add_argument("--purge-days", type=int, default=None,
+                        help="净化天数（默认: 自动从 label_horizon 推导）")
+    tscv_parser.add_argument("--embargo-days", type=int, default=None,
+                        help="禁运天数（默认: 自动从 label_horizon 推导）")
     tscv_parser.add_argument("--output-dir", type=str, default=_output_cfg.get("tscv", "output/tscv"))
 
     # === Phase 3: regime ===
@@ -447,14 +558,16 @@ def cmd_backtest(args):
         recorder = R.get_recorder(recorder_id=args.rid, experiment_name=args.experiment)
         model = recorder.load_object("trained_model")
         port_config = copy.deepcopy(port_config)
+        _inject_industry_strategy(port_config)
         s_kwargs = port_config.setdefault("strategy", {}).setdefault("kwargs", {})
         s_kwargs["model"] = model
         s_kwargs["dataset"] = dataset
         recorder = R.get_recorder()
         sr = SignalRecord(model, dataset, recorder)
         sr.generate()
-        par = PortAnaRecord(recorder, port_config, "day")
-        par.generate()
+        with _a_stock_exchange_context():
+            par = PortAnaRecord(recorder, port_config, "day")
+            par.generate()
         ba_rid = recorder.id
     logger.info("[步骤 3/4] ✓ 回测完成, backtest_recorder_id=%s", ba_rid)
 
@@ -825,6 +938,7 @@ def cmd_full(args):
             recorder = R.get_recorder(recorder_id=rid, experiment_name=args.experiment)
             model_bt = recorder.load_object("trained_model")
             port_config = copy.deepcopy(port_config)
+            _inject_industry_strategy(port_config)
             s_kwargs = port_config.setdefault("strategy", {}).setdefault("kwargs", {})
             s_kwargs["model"] = model_bt
             s_kwargs["dataset"] = dataset
@@ -833,8 +947,9 @@ def cmd_full(args):
             sr = SignalRecord(model_bt, dataset, recorder)
             sr.generate()
             logger.info("  → 正在执行回测模拟交易 ...")
-            par = PortAnaRecord(recorder, port_config, "day")
-            par.generate()
+            with _a_stock_exchange_context():
+                par = PortAnaRecord(recorder, port_config, "day")
+                par.generate()
             ba_rid = recorder.id
         logger.info("  ✓ 回测完成, backtest_recorder_id=%s", ba_rid)
     except Exception as e:
@@ -1090,10 +1205,14 @@ def cmd_ic_stability(args):
 
     logger.info("[步骤 4/4] 生成 IC 稳定性报告 (ICIR / 衰减曲线 / 分层分析) ...")
     from qlib_pipeline.ic_stability import generate_ic_stability_report
+    from qlib_pipeline.tscv import _resolve_label_horizon
+    label_horizon = _resolve_label_horizon(config)
+    logger.info("  → 标签前瞻天数: %d (用于 Newey-West max_lags)", label_horizon)
     run_dir = _make_run_dir(args.output_dir)
     report = generate_ic_stability_report(
         ic_series,
         output_dir=run_dir,
+        label_horizon=label_horizon,
     )
     logger.info("[步骤 4/4] ✓ IC 稳定性分析完成")
     logger.info("  → ICIR: %.4f", report["icir"])
@@ -1280,16 +1399,19 @@ def cmd_update(args):
 
 
 def _normalize_to_qlib_code(stock_code: str) -> str:
-    """将纯数字股票代码还原为 Qlib 格式（SH/SZ 前缀）。
+    """将纯数字股票代码还原为 Qlib 格式（小写 sh/sz/bj 前缀）。
 
-    print_stock_picks() 保存 CSV 时会去掉 SH/SZ 前缀以方便人工阅读，
-    但 Qlib D.features() 查询需要完整格式：SH600000 / SZ000001。
+    print_stock_picks() 保存 CSV 时会去掉前缀以方便人工阅读，
+    但 Qlib D.features() 查询需要完整格式：sh600000 / sz000001 / bj430001。
     """
     code = str(stock_code).strip().zfill(6)
-    if code.startswith("6"):
-        return f"SH{code}"
-    else:
-        return f"SZ{code}"
+    if code.startswith(("60", "68", "90", "11", "13")):
+        return f"sh{code}"
+    elif code.startswith(("00", "30", "12", "15")):
+        return f"sz{code}"
+    elif code.startswith(("83", "87", "43", "92", "88")):
+        return f"bj{code}"
+    return f"sh{code}"
 
 
 def _validate_benchmark_price(price: pd.Series, benchmark_code: str, config: dict) -> None:

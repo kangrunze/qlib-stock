@@ -15,7 +15,7 @@ Usage:
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -271,6 +271,9 @@ def ic_decay(predictions: pd.DataFrame, returns: Dict[int, pd.DataFrame]
     """
     Analyze IC decay across different holding periods.
 
+    每个 horizon 使用对应的 horizon 值作为 Newey-West max_lags，
+    因为长周期标签（如 60 日）的自相关结构需要更大的滞后阶数来修正。
+
     Args:
         predictions: model predictions (index=date, columns=stock)
         returns: dict of future returns for different horizons
@@ -302,7 +305,8 @@ def ic_decay(predictions: pd.DataFrame, returns: Dict[int, pd.DataFrame]
 
         if ic_vals:
             ic_series = pd.Series(ic_vals)
-            metrics = compute_icir(ic_series)
+            # 逐 horizon 传对应的 max_lags（5日标签用5，60日标签用60）
+            metrics = compute_icir(ic_series, max_lags=horizon)
             results.append({
                 "horizon": horizon,
                 **metrics,
@@ -386,12 +390,26 @@ def ic_autocorrelation(ic_series: pd.Series, max_lag: int = 20) -> pd.DataFrame:
 def generate_ic_stability_report(ic_series: pd.Series,
                                  decay_df: Optional[pd.DataFrame] = None,
                                  stratified_df: Optional[pd.DataFrame] = None,
-                                 output_dir: str = "output/ic_stability") -> Dict:
-    """Generate comprehensive IC stability report."""
+                                 output_dir: str = "output/ic_stability",
+                                 label_horizon: Optional[int] = None) -> Dict:
+    """Generate comprehensive IC stability report.
+
+    Args:
+        ic_series: 逐日 IC 序列
+        decay_df: IC 衰减分析结果（可选）
+        stratified_df: 分层 IC 分析结果（可选）
+        output_dir: 输出目录
+        label_horizon: 标签前瞻天数（如 xs_ret_60d → 60），用作 Newey-West max_lags。
+            None 时回退到 n**0.25 经验公式（可能高估显著性，不推荐）。
+    """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    icir = compute_icir(ic_series)
+    # 2026-07-10 修复：max_lags 从 label_horizon 推导，而非 n**0.25
+    #   长周期标签（如 60 日）的自相关结构需要 ~60 的滞后阶数，
+    #   n**0.25 ≈ 4（250 交易日）远不足以修正，会系统性高估显著性。
+    max_lags = label_horizon if label_horizon and label_horizon > 0 else None
+    icir = compute_icir(ic_series, max_lags=max_lags)
     acf_df = ic_autocorrelation(ic_series)
 
     # Save data

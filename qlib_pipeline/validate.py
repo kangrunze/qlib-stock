@@ -25,6 +25,14 @@ class RecommendationValidator:
         price_data: pd.DataFrame,
         horizons: List[int] = [5, 10, 20]
     ) -> pd.DataFrame:
+        """验证推荐股票的后续收益。
+
+        2026-07-10 修复前视偏差:
+          信号在 T 日收盘后计算（用 T 日的 close/成交量等特征），
+          现实中最早只能在 T+1 日下单。买入价取 T+1 日开盘价，
+          与正式回测的 deal_price: "open" 保持一致。
+          收益窗口也从 T+1 开盘价算起，到 T+1+horizon 日开盘价。
+        """
         results = []
         for _, rec in recommendations_df.iterrows():
             rec_date = rec["date"]
@@ -39,14 +47,24 @@ class RecommendationValidator:
                 rec_date_idx = stock_prices.index.get_loc(rec_date)
                 if isinstance(rec_date_idx, slice):
                     rec_date_idx = rec_date_idx.start
+
+                # T+1 日为实际买入日（与回测 deal_price: open 一致）
+                buy_idx = rec_date_idx + 1
+                if buy_idx >= len(stock_prices):
+                    logger.warning("验证失败 %s %s: T+1 日数据不存在", stock, rec_date)
+                    continue
+
                 result = {
                     "date": rec_date, "stock_code": stock,
                     "rank": rank, "score": score,
-                    "rec_price": stock_prices.iloc[rec_date_idx]["close"]
+                    # 买入价 = T+1 日开盘价（无前视偏差）
+                    "rec_price": stock_prices.iloc[buy_idx]["open"]
                 }
                 for horizon in horizons:
-                    if rec_date_idx + horizon < len(stock_prices):
-                        future_price = stock_prices.iloc[rec_date_idx + horizon]["close"]
+                    # 收益窗口: T+1 开盘 → T+1+horizon 开盘
+                    future_idx = buy_idx + horizon
+                    if future_idx < len(stock_prices):
+                        future_price = stock_prices.iloc[future_idx]["open"]
                         ret = (future_price - result["rec_price"]) / result["rec_price"]
                         result[f"ret_{horizon}d"] = ret
                     else:

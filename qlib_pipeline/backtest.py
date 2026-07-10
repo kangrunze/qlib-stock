@@ -484,7 +484,7 @@ def print_stock_picks(pred_df, top_k: int = 30, date: str = None,
         picks["date"] = target_date.strftime("%Y-%m-%d")
 
         # 清理股票代码格式（去掉 SH/SZ 前缀，统一为 6 位数字）
-        picks["stock_code"] = picks["stock_code"].astype(str).str.replace(r'^SH|^SZ', '', regex=True)
+        picks["stock_code"] = picks["stock_code"].astype(str).str.replace(r'^[sS][hH]|^[sS][zZ]', '', regex=True)
         picks["stock_code"] = picks["stock_code"].str.zfill(6)
 
         # 打印选股推荐
@@ -688,14 +688,14 @@ def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
                     trade_records.append({
                         "date": date_str,
                         "action": "BUY",
-                        "stock_code": str(stock).replace("SH", "").replace("SZ", ""),
+                        "stock_code": str(stock).replace("SH", "").replace("SZ", "").replace("sh", "").replace("sz", ""),
                         "amount": round(per_stock_value, 2),
                         "score": round(float(score), 6),
                     })
                     holding_records.append({
                         "date": date_str,
                         "rank": rank,
-                        "stock_code": str(stock).replace("SH", "").replace("SZ", ""),
+                        "stock_code": str(stock).replace("SH", "").replace("SZ", "").replace("sh", "").replace("sz", ""),
                         "position_value": round(per_stock_value, 2),
                         "weight": round(weight, 4),
                         "score": round(float(score), 6),
@@ -716,7 +716,7 @@ def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
                         trade_records.append({
                             "date": date_str,
                             "action": "SELL",
-                            "stock_code": str(stock).replace("SH", "").replace("SZ", ""),
+                            "stock_code": str(stock).replace("SH", "").replace("SZ", "").replace("sh", "").replace("sz", ""),
                             "amount": round(per_stock_value, 2),
                             "score": round(float(daily.loc[stock, "score"]) if stock in daily.index else 0, 6),
                         })
@@ -725,7 +725,7 @@ def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
                     trade_records.append({
                         "date": date_str,
                         "action": "BUY",
-                        "stock_code": str(stock).replace("SH", "").replace("SZ", ""),
+                        "stock_code": str(stock).replace("SH", "").replace("SZ", "").replace("sh", "").replace("sz", ""),
                         "amount": round(per_stock_value, 2),
                         "score": round(float(daily.loc[stock, "score"]), 6),
                     })
@@ -737,7 +737,7 @@ def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
                     holding_records.append({
                         "date": date_str,
                         "rank": rank,
-                        "stock_code": str(stock).replace("SH", "").replace("SZ", ""),
+                        "stock_code": str(stock).replace("SH", "").replace("SZ", "").replace("sh", "").replace("sz", ""),
                         "position_value": round(per_stock_value, 2),
                         "weight": round(weight, 4),
                         "score": round(float(score), 6),

@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Generator
 
-import numpy as np
 import pandas as pd
 
 _PROJECT_ROOT = Path(__file__).parent.parent
@@ -30,6 +29,91 @@ if str(_PROJECT_ROOT) not in sys.path:
 from qlib_pipeline.numpy_compat import *  # noqa
 
 logger = logging.getLogger(__name__)
+
+
+class _PurgedDatasetH:
+    """支持离散日期列表的 DatasetH 替代实现。
+
+    问题背景：
+      Qlib DatasetH 的 segments 语义是连续时间区间 [start, end]，
+      当 segments["train"] = [train_dates[0], train_dates[-1]] 时，
+      该区间会包含被 purge/embargo 特意排除的测试窗口本身，
+      导致训练数据泄露到测试期。
+
+    解决方案：
+      本类接收已 fit 的 handler 和离散日期列表，
+      fetch 全量 DataFrame 后按日期 isin() 过滤，
+      确保只有 train_dates 中出现的日期才进入训练集。
+
+    接口兼容性：
+      提供 prepare(segment, col_set, data_key) 方法，
+      与 Qlib DatasetH 的接口一致，LGBModel.fit/predict 和
+      ic_stability.evaluate_fold 可直接使用。
+    """
+
+    def __init__(self, handler, segments: dict):
+        """
+        Args:
+            handler: 已 fit 的 Qlib DataHandler 实例
+            segments: {"train": [date1, date2, ...], "test": [date3, date4, ...]}
+                      值为离散日期字符串列表（非 [start, end] 连续区间）
+        """
+        self.handler = handler
+        self._segments = segments
+        # 预取全量数据（handler.fetch 是内存操作，不重复 IO）
+        self._full_cache: Dict[tuple, pd.DataFrame] = {}
+
+    @property
+    def segments(self):
+        return self._segments
+
+    def _get_dates(self, segment: str) -> List[str]:
+        slc = self._segments.get(segment, [])
+        if isinstance(slc, (list, tuple)):
+            return list(slc)
+        return [slc] if slc else []
+
+    def prepare(self, segments, col_set="all", data_key=None, **kwargs):
+        """与 Qlib DatasetH.prepare 接口兼容。
+
+        Parameters
+        ----------
+        segments : str | list[str]
+            段名如 "train"、"test"，或它们的列表
+        col_set : str
+            列组名: "all" | "feature" | "label" | ["feature", "label"]
+        data_key : str
+            Qlib DataHandlerLP.DK_I / DK_L / DK_R，传递给 handler.fetch
+        """
+        from qlib.data.dataset.handler import DataHandlerLP
+
+        if data_key is None:
+            data_key = DataHandlerLP.DK_I
+
+        # 支持多段请求 ["train", "test"]
+        if isinstance(segments, (list, tuple)) and not isinstance(segments, str):
+            return [self._prepare_single(seg, col_set, data_key) for seg in segments]
+        return self._prepare_single(segments, col_set, data_key)
+
+    def _prepare_single(self, segment: str, col_set, data_key) -> pd.DataFrame:
+        dates = self._get_dates(segment)
+        if not dates:
+            return pd.DataFrame()
+
+        # 缓存键: (col_set_key, data_key)
+        if isinstance(col_set, list):
+            col_set_key = tuple(sorted(col_set))
+        else:
+            col_set_key = col_set
+        cache_key = (col_set_key, data_key)
+
+        if cache_key not in self._full_cache:
+            self._full_cache[cache_key] = self.handler.fetch(col_set=col_set, data_key=data_key)
+
+        full_df = self._full_cache[cache_key]
+        date_index = pd.to_datetime(dates)
+        mask = full_df.index.get_level_values(0).isin(date_index)
+        return full_df.loc[mask]
 
 
 def _resolve_label_horizon(config: dict) -> int:
@@ -111,9 +195,11 @@ def generate_purged_kfold_splits(
     )
     n = len(dates)
     date_dt = pd.to_datetime(dates)
-    purge_td = pd.Timedelta(days=purge_days)
-    embargo_td = pd.Timedelta(days=embargo_days)
-    label_td = pd.Timedelta(days=label_horizon)
+    # 交易日 → 日历日折算（×7/5）：60 交易日 ≈ 84 日历日
+    #   确保 purge/embargo/label 窗口完全覆盖标签前瞻期
+    purge_td = pd.Timedelta(days=int(purge_days * 7 / 5))
+    embargo_td = pd.Timedelta(days=int(embargo_days * 7 / 5))
+    label_td = pd.Timedelta(days=int(label_horizon * 7 / 5))
 
     for i in range(n_splits):
         # 测试集: i-th block
@@ -215,6 +301,13 @@ class PurgedKFoldCV:
         """
         Execute Purged K-Fold TSCV.
 
+        关键修复（2026-07-10）：
+          原实现将离散 train_dates 喂给 Qlib DatasetH 的 segments 时只取
+          [train_dates[0], train_dates[-1]]，Qlib 会按连续区间取数，
+          导致测试期数据原封不动地混入训练集。
+          现改用 _PurgedDatasetH，按离散日期 isin() 过滤，
+          确保只有 train_dates 中出现的日期才进入训练集。
+
         Returns:
             DataFrame with per-fold metrics
         """
@@ -251,33 +344,63 @@ class PurgedKFoldCV:
             # 深拷贝原 config，只更新时间字段，保留 label/processors/freq/qlib_lgb 等
             fold_config = _copy.deepcopy(self.config)
             fold_config.setdefault("data_handler", {})
-            fold_config["data_handler"]["start_time"] = train_dates[0]
-            fold_config["data_handler"]["end_time"] = test_dates[-1]
+
+            # handler 的数据范围必须覆盖所有 train+test 日期
+            # （双向净化时 train_dates 可能跨越 test 段前后）
+            all_dates = sorted(set(train_dates + test_dates))
+            fold_config["data_handler"]["start_time"] = all_dates[0]
+            fold_config["data_handler"]["end_time"] = all_dates[-1]
+
+            # processor 拟合范围：只用测试期之前的训练数据，避免标准化器
+            # 统计量泄露测试期信息
+            test_start = test_dates[0]
+            pre_test_train = [d for d in train_dates if d < test_start]
+            fit_end = pre_test_train[-1] if pre_test_train else train_dates[-1]
             fold_config["data_handler"]["fit_start_time"] = train_dates[0]
-            fold_config["data_handler"]["fit_end_time"] = train_dates[-1]
+            fold_config["data_handler"]["fit_end_time"] = fit_end
+
             fold_config.setdefault("dataset", {})
             fold_config["dataset"]["handler"] = handler
+            # segments 保留为占位（build_task 需要它），实际由 _PurgedDatasetH 覆盖
             fold_config["dataset"]["segments"] = {
                 "train": [train_dates[0], train_dates[-1]],
                 "test": [test_dates[0], test_dates[-1]],
             }
 
-            # 通过 build_task 构建 task dict
+            # 通过 build_task 构建 task dict（处理 label/CSMedianSubtract/RankLGBModel）
             task = build_task(fold_config)
 
             try:
-                dataset = init_instance_by_config(task["dataset"])
+                # 先用 init_instance_by_config 创建并 fit handler
+                handler_instance = init_instance_by_config(task["dataset"]["kwargs"]["handler"])
+
+                # 用离散日期列表构建 _PurgedDatasetH，替代标准 DatasetH
+                # 这是本次修复的核心：确保训练数据只包含 train_dates 中的日期
+                dataset = _PurgedDatasetH(
+                    handler=handler_instance,
+                    segments={
+                        "train": train_dates,
+                        "test": test_dates,
+                    },
+                )
+
                 model = init_instance_by_config(task["model"])
 
                 with R.start(experiment_name=f"tscv_fold_{i}"):
                     R.log_params(**flatten_dict(task))
                     R.log_params(handler_type=handler)
+                    R.log_params(
+                        purge_strategy="discrete_date_isin",
+                        n_train_dates=len(train_dates),
+                        n_test_dates=len(test_dates),
+                        fit_end_time=fit_end,
+                    )
                     model.fit(dataset)
                     rid = R.get_recorder().id
 
                 # 评估：在测试集上计算 IC 指标
                 from qlib_pipeline.ic_stability import evaluate_fold, get_feature_importance
-                eval_metrics = evaluate_fold(model, dataset)
+                eval_metrics = evaluate_fold(model, dataset, label_horizon=self.label_horizon)
                 feat_importance = get_feature_importance(model, dataset)
 
                 self.fold_results.append({

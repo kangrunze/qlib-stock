@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
 _PROJECT_ROOT = Path(__file__).parent.parent
@@ -53,7 +52,8 @@ def _quarter_offset(date_str: str, quarters: int) -> str:
 
 def generate_rolling_windows(
     start: str, end: str, train_years: float = 3.0,
-    step_months: int = 6, test_years: float = 1.0
+    step_months: int = 6, test_years: float = 1.0,
+    label_horizon: int = 0,
 ) -> List[Dict[str, str]]:
     """
     Generate rolling walk-forward windows.
@@ -64,6 +64,12 @@ def generate_rolling_windows(
         train_years: training window in years
         step_months: step size in months
         test_years: test window in years
+        label_horizon: 标签前瞻天数（如 60 日收益率标签 = 60）。
+            当 > 0 时，在 train/valid 和 valid/test 边界处留 purge gap，
+            防止训练集标签窗口（如 ret_60d 覆盖未来 60 天）延伸到
+            验证/测试期导致数据泄露。
+            gap 大小 = label_horizon 个交易日折算为日历日（×7/5），
+            确保 60 交易日标签 → 84 日历日 gap，完全覆盖标签窗口。
 
     Returns:
         List of dicts with train/valid/test date ranges
@@ -72,16 +78,33 @@ def generate_rolling_windows(
     train_start = start
     train_months = int(train_years * 12)
     test_months = int(test_years * 12)
+    # purge gap: label_horizon 个交易日 → 折算为日历日（×7/5）
+    #   60 交易日 ≈ 84 日历日，确保标签窗口完全被 gap 覆盖
+    gap_days = pd.Timedelta(days=int(label_horizon * 7 / 5)) if label_horizon > 0 else None
 
     while True:
-        train_end = _month_offset(train_start, train_months)
-        valid_start = train_end
-        valid_end = _month_offset(valid_start, test_months)
-        test_start = valid_end
-        test_end = _month_offset(test_start, test_months)
+        train_end_raw = _month_offset(train_start, train_months)
+        valid_start_raw = _month_offset(train_end_raw, 0)  # = train_end_raw
+        valid_end_raw = _month_offset(valid_start_raw, test_months)
+        test_start_raw = valid_end_raw
+        test_end = _month_offset(test_start_raw, test_months)
 
-        if test_start >= end:
+        if test_start_raw >= end:
             break
+
+        # 应用 purge gap：
+        #   train_end 往前收缩 gap，使训练集最后一天 + label_horizon < valid_start
+        #   valid_end 往前收缩 gap，使验证集最后一天 + label_horizon < test_start
+        if gap_days is not None:
+            train_end = str(pd.Timestamp(train_end_raw) - gap_days)[:10]
+            valid_start = str(pd.Timestamp(valid_start_raw) - gap_days)[:10]
+            valid_end = str(pd.Timestamp(valid_end_raw) - gap_days)[:10]
+            test_start = str(pd.Timestamp(test_start_raw) - gap_days)[:10]
+        else:
+            train_end = train_end_raw
+            valid_start = valid_start_raw
+            valid_end = valid_end_raw
+            test_start = test_start_raw
 
         # Ensure valid_end doesn't exceed end
         if valid_end > end:
@@ -124,6 +147,9 @@ class RollingTrainer:
         self.window_years = window_years
         self.step_months = step_months
         self.test_years = test_years
+        # 从 config 解析 label_horizon，用于 walk-forward purge gap
+        from qlib_pipeline.tscv import _resolve_label_horizon
+        self.label_horizon = _resolve_label_horizon(config)
         self.results: List[Dict] = []
 
     def _get_overall_dates(self) -> Tuple[str, str]:
@@ -161,7 +187,8 @@ class RollingTrainer:
 
         start, end = self._get_overall_dates()
         windows = generate_rolling_windows(
-            start, end, self.window_years, self.step_months, self.test_years
+            start, end, self.window_years, self.step_months, self.test_years,
+            label_horizon=self.label_horizon,
         )
 
         if self.n_folds:
@@ -325,8 +352,13 @@ def rolling_cross_validation(
     start = dh_cfg.get("start_time", "2020-01-01")
     end = dh_cfg.get("end_time", "2025-12-31")
 
+    # 从 config 解析 label_horizon，用于 walk-forward purge gap
+    from qlib_pipeline.tscv import _resolve_label_horizon
+    label_horizon = _resolve_label_horizon(config)
+
     windows = generate_rolling_windows(
-        start, end, window_years, step_months, test_years
+        start, end, window_years, step_months, test_years,
+        label_horizon=label_horizon,
     )
     if n_folds:
         windows = windows[:n_folds]

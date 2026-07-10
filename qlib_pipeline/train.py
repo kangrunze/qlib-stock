@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -135,6 +136,159 @@ def _build_label_config(label_name: str) -> list:
         return [base_expr]
 
 
+def _get_st_stocks(config: dict) -> set:
+    """获取当前 ST 股票集合（Qlib 格式，如 'sh600000'）。
+
+    优先从 DuckDB store 读取；不可用时返回空集合并记录警告。
+
+    已知限制：is_st 基于当前股票名称判断，非 PIT 状态。
+    真正的 PIT ST 过滤需要历史股票名称数据，当前数据源不支持。
+    """
+    try:
+        from data_center.duckdb_store import DuckDBStore
+        store = DuckDBStore()
+        result = store.conn.execute(
+            "SELECT DISTINCT code FROM daily_data WHERE is_st = true"
+        ).fetchdf()
+
+        def _to_qlib_code(code):
+            code = str(code).zfill(6)
+            if code.startswith(("60", "68", "90", "11", "13")):
+                return f"sh{code}"
+            elif code.startswith(("00", "30", "12", "15")):
+                return f"sz{code}"
+            elif code.startswith(("83", "87", "43", "92", "88")):
+                return f"bj{code}"
+            return f"sh{code}"
+
+        return set(_to_qlib_code(c) for c in result["code"].tolist())
+    except Exception as e:
+        logger.debug("无法从 DuckDB 获取 ST 股票列表: %s", e)
+        return set()
+
+
+def _build_stock_universe_instruments(config: dict) -> Optional[str]:
+    """根据 stock_universe 配置生成过滤后的 instruments 文件。
+
+    读取 config["stock_universe"]，对 base instruments 文件应用：
+      - exclude_boards: 按板块剔除（北交所 bj 前缀）
+      - exclude_st: 剔除当前 ST 股票（静态，非 PIT）
+      - min_listed_days: 将每只股票的 start_date 后移 N 个交易日（PIT 过滤）
+      - exclude_suspended: 由 handler 默认的 DropnaProcessor 部分覆盖
+        （停牌股特征为 NaN 会被丢弃），此处不做额外处理
+
+    将过滤后的 instruments 写入临时文件，返回 market 名称。
+    若 stock_universe 配置不存在或过滤失败，返回 None。
+
+    Args:
+        config: workflow config dict
+
+    Returns:
+        market 名称（如 "filtered_all"）或 None
+    """
+    univ = config.get("stock_universe")
+    if not univ:
+        return None
+
+    dh_cfg = config.get("data_handler", {})
+    base_market = dh_cfg.get("instruments", "all")
+    if not isinstance(base_market, str):
+        return None  # instruments 已是自定义格式，不再过滤
+
+    import os
+    provider_uri = os.environ.get("QLIB_PROVIDER_URI") or config.get("qlib", {}).get("provider_uri")
+    if not provider_uri:
+        return None
+
+    instruments_dir = Path(provider_uri) / "instruments"
+    base_file = instruments_dir / f"{base_market}.txt"
+    if not base_file.exists():
+        logger.warning("instruments 文件不存在: %s, 跳过 stock_universe 过滤", base_file)
+        return None
+
+    # 读取 instruments 文件: symbol\tstart_date\tend_date
+    df = pd.read_csv(
+        base_file, sep="\t", header=None,
+        names=["instrument", "start_date", "end_date"],
+        dtype={"instrument": str},
+    )
+    original_count = len(df)
+
+    # 1. exclude_boards: 按板块剔除
+    exclude_boards = univ.get("exclude_boards", [])
+    if exclude_boards:
+        if "北交所" in exclude_boards:
+            df = df[~df["instrument"].str.lower().str.startswith("bj")]
+        logger.info("stock_universe: exclude_boards=%s", exclude_boards)
+
+    # 2. exclude_st: 剔除当前 ST 股票（静态，非 PIT）
+    if univ.get("exclude_st", False):
+        st_stocks = _get_st_stocks(config)
+        if st_stocks:
+            before_st = len(df)
+            df = df[~df["instrument"].str.lower().isin(st_stocks)]
+            logger.info("stock_universe: 剔除 %d 只 ST 股票", before_st - len(df))
+        else:
+            logger.warning(
+                "stock_universe.exclude_st=true 但无法获取 ST 股票列表，跳过 ST 过滤"
+            )
+
+    # 3. min_listed_days: 将 start_date 后移 N 个交易日
+    min_days = univ.get("min_listed_days", 0)
+    if min_days > 0:
+        try:
+            from qlib.data import D
+            cal = D.calendar(
+                start_time=str(df["start_date"].min()),
+                end_time=str(df["end_date"].max()),
+            )
+            if len(cal) > min_days:
+                cal_list = list(cal)
+                cal_ts = [pd.Timestamp(d) for d in cal_list]
+
+                def _adjust_start(row_start, row_end):
+                    stock_start = pd.Timestamp(str(row_start))
+                    # 在日历中找到 >= stock_start 的位置
+                    idx = None
+                    for j, d in enumerate(cal_ts):
+                        if d >= stock_start:
+                            idx = j
+                            break
+                    if idx is None:
+                        return str(row_start)
+                    new_idx = idx + min_days
+                    if new_idx < len(cal_ts):
+                        return str(cal_ts[new_idx].date())
+                    return str(row_end)  # 上市太晚，后移后超过 end_date
+
+                df["start_date"] = df.apply(
+                    lambda r: _adjust_start(r["start_date"], r["end_date"]), axis=1
+                )
+                # 剔除 start_date > end_date 的股票（上市不足 min_listed_days）
+                df = df[df["start_date"] <= df["end_date"]]
+                logger.info("stock_universe: min_listed_days=%d 过滤完成", min_days)
+        except Exception as e:
+            logger.warning("min_listed_days 过滤失败: %s, 跳过", e)
+
+    filtered_count = len(df)
+    logger.info(
+        "stock_universe 过滤: %d → %d 只股票 (排除 %d)",
+        original_count, filtered_count, original_count - filtered_count,
+    )
+
+    if filtered_count == 0:
+        logger.error("stock_universe 过滤后股票池为空, 回退到原始 instruments")
+        return None
+
+    # 写入过滤后的 instruments 文件
+    market_name = f"filtered_{base_market}"
+    filtered_file = instruments_dir / f"{market_name}.txt"
+    df.to_csv(filtered_file, sep="\t", header=False, index=False)
+    logger.info("过滤后 instruments 已写入: %s", filtered_file)
+
+    return market_name
+
+
 def build_task(config: dict) -> dict:
     """
     Build complete Qlib task config from workflow config.
@@ -146,6 +300,9 @@ def build_task(config: dict) -> dict:
     xs_ret_Nd 标签会注入 CSMedianSubtract learn_processor（截面中位数减法），
     其他标签（ret_Nd / alpha_Nd / up_down_Nd）不注入额外 processor。
 
+    2026-07-10 修复：读取 config["stock_universe"]，在 handler 层真正生效
+    ST/次新股/北交所过滤，而非仅停留在下载阶段的文档意图上。
+
     Args:
         config: workflow config dict
 
@@ -154,6 +311,13 @@ def build_task(config: dict) -> dict:
     """
     handler = config.get("dataset", {}).get("handler", "Alpha158")
     handler_cfg = config.get("data_handler", {}).copy()
+
+    # stock_universe 过滤：在训练/回测阶段真正生效
+    # 原实现仅 download_history.py 读取 stock_universe，qlib_pipeline 完全忽略
+    filtered_market = _build_stock_universe_instruments(config)
+    if filtered_market:
+        handler_cfg["instruments"] = filtered_market
+        logger.info("stock_universe 过滤已生效: instruments=%s", filtered_market)
 
     # 根据 labels.primary 构造 label 表达式
     labels_cfg = config.get("labels", {})
@@ -164,10 +328,10 @@ def build_task(config: dict) -> dict:
 
     # xs_ret_Nd 标签注入 CSMedianSubtract（截面中位数减法）
     # 仅影响 xs_ret_Nd 的 label，不影响 feature 标准化
-    # 2026-07-09 修复：原逻辑当 handler_cfg 无 learn_processors 时，
-    #   existing_lp=[] 会导致覆盖 Alpha158 类默认的 RobustZScoreNorm+DropnaLabel，
-    #   使 feature 丢失标准化。现改为：仅当用户显式配置了 learn_processors 时才追加，
-    #   否则将 CSMedianSubtract 放入 infer_processors（不影响 feature 标准化）。
+    # 2026-07-10 修复：CSMedianSubtract 必须放入 learn_processors，
+    #   确保训练标签也经过截面中位数减法（否则训练目标为绝对收益，推理目标为相对收益，
+    #   二者不一致）。Alpha158 的默认 learn_processors = [DropnaLabel, CSZScoreNorm]，
+    #   当用户未配置时，显式写入默认值 + CSMedianSubtract，避免覆盖丢失默认处理器。
     import re
     is_xs_ret = bool(re.match(r"^xs_ret_\d+d$", primary_label))
     if is_xs_ret:
@@ -184,16 +348,14 @@ def build_task(config: dict) -> dict:
             else:
                 handler_cfg["learn_processors"] = [existing_lp, cs_median_cfg]
         else:
-            # 用户未配置 learn_processors → 不覆盖 Alpha158 默认值
-            # 将 CSMedianSubtract 放入 infer_processors，仅作用于 label 推理
-            existing_ip = handler_cfg.get("infer_processors", [])
-            if isinstance(existing_ip, list):
-                handler_cfg["infer_processors"] = existing_ip + [cs_median_cfg]
-            elif existing_ip:
-                handler_cfg["infer_processors"] = [existing_ip, cs_median_cfg]
-            else:
-                handler_cfg["infer_processors"] = [cs_median_cfg]
-        logger.info("xs_ret 标签注入 CSMedianSubtract（infer_processor，不覆盖默认标准化器）")
+            # 用户未配置 learn_processors → 使用 Alpha158 默认值 + CSMedianSubtract
+            # Alpha158 默认: DropnaLabel + CSZScoreNorm(label)
+            handler_cfg["learn_processors"] = [
+                {"class": "DropnaLabel"},
+                {"class": "CSZScoreNorm", "kwargs": {"fields_group": "label"}},
+                cs_median_cfg,
+            ]
+        logger.info("xs_ret 标签注入 CSMedianSubtract（learn_processor，训练+推理一致）")
 
     # Data handler
     handler_cfg = {

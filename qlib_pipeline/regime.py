@@ -14,7 +14,7 @@ Usage:
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -259,37 +259,23 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
             logger.info("关键年份独立回测: %s (%s ~ %s)", year, start, end)
 
         try:
-            handler_cfg = {
-                "class": handler,
-                "module_path": "qlib.contrib.data.handler",
-                "kwargs": {
-                    "start_time": start,
-                    "end_time": end,
-                    "fit_start_time": start,
-                    "fit_end_time": end,
-                    "instruments": config.get("data_handler", {}).get("instruments", "csi300"),
-                },
-            }
-
-            task = {
-                "model": {
-                    "class": model_cfg.get("class", "LGBModel"),
-                    "module_path": model_cfg.get("module_path", "qlib.contrib.model.gbdt"),
-                    "kwargs": model_cfg.get("kwargs", {}),
-                },
-                "dataset": {
-                    "class": "DatasetH",
-                    "module_path": "qlib.data.dataset",
-                    "kwargs": {
-                        "handler": handler_cfg,
-                        "segments": {
-                            "train": [start, start],  # 仅用于初始化，实际训练用预训练模型
-                            "test": [start, end],
-                        },
-                    },
-                },
-            }
-
+            # 2026-07-10 修复：改用 build_task() 构建 task，确保：
+            #   1. 标签表达式正确（xs_ret_20d/60d 而非默认 2 日收益率）
+            #   2. CSMedianSubtract 处理器注入
+            #   3. loss=rank 时正确路由到 RankLGBModel
+            #   4. stock_universe 过滤生效（exclude_st/exclude_boards/min_listed_days）
+            from qlib_pipeline.train import build_task
+            import copy as _copy
+            fold_config = _copy.deepcopy(config)
+            fold_config.setdefault("data_handler", {})
+            fold_config["data_handler"]["start_time"] = start
+            fold_config["data_handler"]["end_time"] = end
+            fold_config["data_handler"]["fit_start_time"] = start
+            fold_config["data_handler"]["fit_end_time"] = end
+            fold_config.setdefault("dataset", {}).setdefault("segments", {})
+            fold_config["dataset"]["segments"]["train"] = [start, start]
+            fold_config["dataset"]["segments"]["test"] = [start, end]
+            task = build_task(fold_config)
             dataset = init_instance_by_config(task["dataset"])
 
             with R.start(experiment_name=f"key_year_{year}"):
@@ -304,26 +290,44 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
                 sr = SignalRecord(model, dataset, R.get_recorder())
                 sr.generate()
 
-                # 从配置中读取 benchmark，优先使用 backtest 配置
+                # 2026-07-10 修复：从 config 读取回测配置，不再硬编码
                 bt_config = config.get("backtest", {}).get("backtest", {})
                 benchmark = bt_config.get("benchmark", config.get("regime", {}).get("benchmark_code", "SH000300"))
+                strat_kwargs = config.get("backtest", {}).get("strategy", {}).get("kwargs", {})
+                ex_kwargs = config.get("backtest", {}).get("backtest", {}).get("exchange_kwargs", {})
                 port_config = {
                     "strategy": {
                         "class": "TopkDropoutStrategy",
                         "module_path": "qlib.contrib.strategy.signal_strategy",
-                        "kwargs": {"topk": 50, "n_drop": 5, "model": model, "dataset": dataset},
+                        "kwargs": {
+                            "topk": strat_kwargs.get("topk", 30),
+                            "n_drop": strat_kwargs.get("n_drop", 5),
+                            "model": model,
+                            "dataset": dataset,
+                        },
                     },
                     "backtest": {
                         "start_time": start,
                         "end_time": end,
-                        "account": 100000000,
+                        "account": bt_config.get("account", 100000000),
                         "benchmark": benchmark,
-                        "exchange_kwargs": {"open_cost": 0.0005, "close_cost": 0.0015, "min_cost": 5},
+                        "exchange_kwargs": {
+                            "freq": ex_kwargs.get("freq", "day"),
+                            "limit_threshold": ex_kwargs.get("limit_threshold", 0.099),
+                            "deal_price": ex_kwargs.get("deal_price", "open"),
+                            "open_cost": ex_kwargs.get("open_cost", 0.0005),
+                            "close_cost": ex_kwargs.get("close_cost", 0.0015),
+                            "min_cost": ex_kwargs.get("min_cost", 5),
+                        },
                     },
                 }
 
-                par = PortAnaRecord(R.get_recorder(), port_config, "day")
-                par.generate()
+                # 2026-07-10 修复：注入行业中性化策略 + A 股分板块涨跌停 Exchange
+                from run import _inject_industry_strategy, _a_stock_exchange_context
+                _inject_industry_strategy(port_config)
+                with _a_stock_exchange_context():
+                    par = PortAnaRecord(R.get_recorder(), port_config, "day")
+                    par.generate()
                 rid = R.get_recorder().id
 
                 logger.info("  → 回测完成, recorder_id=%s", rid)

@@ -5,7 +5,7 @@
 #
 # 与 workflow_config.yaml 的关系：
 #   - workflow_config.yaml: 短周期默认配置（ret_20d, handler=Alpha158, loss=mse）
-#   - 本文件: 中长周期策略配置（ret_60d, handler=Alpha360, loss=rank）
+#   - 本文件: 中长周期策略配置（xs_ret_60d, handler=Alpha158, loss=rank）
 #   - 共用同一套代码（qlib_pipeline/train.py 等），仅配置内容不同
 #
 # 使用方式:
@@ -19,7 +19,7 @@
 # =============================================================================
 qlib:
   # ⚠ provider_uri 必须与 config/settings.yaml:data_source.qlib_dir 保持一致
-  provider_uri: "D:/trae/qlib_bin"
+  provider_uri: "D:/project/qlib_bin"
   region: "cn"
 
 # =============================================================================
@@ -64,7 +64,11 @@ data_handler:
 #   - 禁运期 [约 2 个月]: 不用于任何训练
 #   - 确认窗口 [2023-2026]: 全程冻结，最终评估一次
 dataset:
-  handler: "Alpha360"              # ★ 中长周期: Alpha360（更长窗口因子）
+  handler: "Alpha158"              # ★ 中长周期: Alpha158（手工因子，适合树模型，可解释性好）
+  # 2026-07-10 修复：从 Alpha360 切换为 Alpha158
+  #   Alpha360 是原始价量窗口特征（360维），专为深度学习序列模型设计，
+  #   配合 LightGBM 树模型不如 Alpha158（158维手工因子）高效，也更难解释。
+  #   Alpha360 作为对照实验可通过 --handler Alpha360 使用。
 
   # 探索阶段 segments（第 7.3 节）
   # train/valid 在探索窗口内，test 为确认窗口的一部分
@@ -101,6 +105,8 @@ backtest:
       time_per_step: "day"
       generate_portfolio_metrics: true
 
+  # 2026-07-10 修复：行业集中度约束（详见 workflow_config.yaml 同名段注释）
+  #   run.py 运行时自动检测行业映射文件，存在则切换为 IndustryConstrainedTopkStrategy
   strategy:
     class: "TopkDropoutStrategy"
     module_path: "qlib.contrib.strategy.signal_strategy"
@@ -115,7 +121,7 @@ backtest:
     benchmark: "SH000300"                    # 沪深300指数（Phase C 修复后）
     exchange_kwargs:
       freq: "day"
-      limit_threshold: 0.099               # 9.9%，留容差避免浮点误拒
+      limit_threshold: 0.099               # fallback（实际由 PerStockLimitExchange 按板块区分）
       deal_price: "open"                    # 次日开盘成交，无前视偏差
       open_cost: 0.0005
       close_cost: 0.0015
