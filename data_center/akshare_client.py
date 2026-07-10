@@ -285,10 +285,17 @@ class AKShareClient:
         symbol: str,
         start: Optional[str] = None,
         end: Optional[str] = None,
-        adjust: str = "qfq",
+        adjust: str = "hfq",
     ) -> pd.DataFrame:
         """
-        下载单只股票日线数据（前复权）
+        下载单只股票日线数据（后复权）
+
+        ⚠ 复权类型说明（2026-07-09 修复未来函数）:
+            原默认 qfq（前复权）会以最新价格为锚点重写全部历史价格，
+            每次有新的送股/分红事件，所有历史 K 线都会被改写，
+            构成教科书级的未来函数（Look-ahead Bias）。
+            现改为 hfq（后复权），以最早价格为锚向后调整，
+            历史价格一经确定不再变化，消除未来函数。
 
         ⚠ is_st 标记的已知限制:
             is_st 基于股票当前名称判断（akshare 返回的 name 是当前最新名称），
@@ -300,7 +307,7 @@ class AKShareClient:
             symbol: 股票代码，如 "000001"
             start: 起始日期 "YYYYMMDD" 或 "YYYY-MM-DD"
             end: 结束日期 "YYYYMMDD" 或 "YYYY-MM-DD"
-            adjust: 复权类型，"qfq"=前复权, "hfq"=后复权, ""=不复权
+            adjust: 复权类型，"hfq"=后复权（默认，无未来函数）, "qfq"=前复权（有未来函数，不推荐）, ""=不复权
 
         Returns:
             DataFrame with standardized English columns
@@ -364,6 +371,19 @@ class AKShareClient:
         else:
             df["is_suspended"] = pd.NA
 
+        # 涨跌停标记（2026-07-09 新增，供回测时过滤不可成交订单）
+        #   判定逻辑：当日 (high == low == close) 且 close 相对前一日涨跌幅
+        #   接近涨跌停阈值 → 一字板，买不到也卖不出
+        #   注意：此处仅做粗略标记，精确判定需在回测引擎中按板块阈值检查
+        if all(c in df.columns for c in ["open", "high", "low", "close", "preclose"]):
+            pass  # preclose 可能在下游计算，此处跳过
+        if all(c in df.columns for c in ["high", "low", "close"]):
+            # 一字板：最高=最低=收盘，且当日有成交量（非停牌）
+            is_one_price = (df["high"] == df["low"]) & (df["high"] == df["close"])
+            df["is_limit"] = is_one_price & ~df["is_suspended"].fillna(True)
+        else:
+            df["is_limit"] = pd.NA
+
         # 确保date列是datetime类型
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"])
@@ -382,8 +402,8 @@ class AKShareClient:
         """
         多线程批量下载日线数据
 
-        同时下载前复权(qfq)和不复权(raw)两份数据：
-          - qfq 用于因子计算（保存为 {code}.parquet）
+        同时下载后复权(hfq)和不复权(raw)两份数据：
+          - hfq 用于因子计算（保存为 {code}.parquet，无未来函数）
           - raw  用于人工核查和后续复权因子计算（保存为 {code}_raw.parquet）
 
         Args:
@@ -395,19 +415,19 @@ class AKShareClient:
             save_raw: 是否同时下载并保存不复权数据（默认 True）
 
         Returns:
-            Dict[str, DataFrame]: code->DataFrame映射（前复权数据）
+            Dict[str, DataFrame]: code->DataFrame映射（后复权数据）
         """
         from tqdm import tqdm
 
         results: Dict[str, pd.DataFrame] = {}
         failed: List[str] = []
 
-        logger.info("开始批量下载 %d 只股票日线数据 (qfq%s)...",
+        logger.info("开始批量下载 %d 只股票日线数据 (hfq%s)...",
                     len(codes), "+raw" if save_raw else "")
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
-                executor.submit(self.download_daily_data, code, start, end, "qfq"): code
+                executor.submit(self.download_daily_data, code, start, end, "hfq"): code
                 for code in codes
             }
             # 若需要 raw，额外提交一批不复权下载任务
@@ -424,7 +444,7 @@ class AKShareClient:
                 disable=not show_progress,
                 ncols=100,
             )
-            # 收集 qfq 结果
+            # 收集 hfq 结果
             for future in as_completed(futures):
                 code = futures[future]
                 try:
@@ -432,11 +452,11 @@ class AKShareClient:
                     if df is not None and len(df) > 0:
                         results[code] = df
                         if save:
-                            self._save_parquet(code, df, adjust="qfq")
+                            self._save_parquet(code, df, adjust="hfq")
                     else:
                         failed.append(code)
                 except Exception as e:
-                    logger.error("下载失败 code=%s (qfq): %s", code, str(e)[:120])
+                    logger.error("下载失败 code=%s (hfq): %s", code, str(e)[:120])
                     failed.append(code)
                 pbar.update(1)
             # 收集 raw 结果
@@ -458,17 +478,17 @@ class AKShareClient:
         )
         return results
 
-    def _save_parquet(self, code: str, df: pd.DataFrame, adjust: str = "qfq") -> str:
+    def _save_parquet(self, code: str, df: pd.DataFrame, adjust: str = "hfq") -> str:
         """保存单只股票数据为Parquet。
 
         Args:
             code: 股票代码
             df: 日线 DataFrame
-            adjust: 复权类型，"qfq"=前复权, ""=不复权。
-                    qfq 保存为 {code}.parquet（兼容旧路径，用于因子计算）；
+            adjust: 复权类型，"hfq"=后复权（默认，无未来函数）, ""=不复权。
+                    hfq 保存为 {code}.parquet（用于因子计算）；
                     不复权保存为 {code}_raw.parquet（用于人工核查和后续复权因子计算）。
         """
-        suffix = "" if adjust == "qfq" else "_raw"
+        suffix = "" if adjust == "hfq" else "_raw"
         filepath = self.parquet_dir / f"{code}{suffix}.parquet"
         df.to_parquet(str(filepath), index=False)
         return str(filepath)

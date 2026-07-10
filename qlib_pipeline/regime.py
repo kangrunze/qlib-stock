@@ -235,7 +235,7 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
     model_cfg = config.get("qlib_lgb", {
         "class": "LGBModel",
         "module_path": "qlib.contrib.model.gbdt",
-        "kwargs": {"loss": "mse", "num_threads": 20},
+        "kwargs": {"loss": "mse", "num_threads": 8},
     })
 
     # 样本外模式：加载预训练模型
@@ -243,7 +243,7 @@ def key_year_backtest(config: dict, years: Optional[List[str]] = None,
     if pretrained_rid:
         logger.info("样本外独立回测模式: 使用预训练模型 %s", pretrained_rid)
         try:
-            pretrained_model = R.get_recorder(recorder_id=pretrained_rid).load_object("params.pkl")
+            pretrained_model = R.get_recorder(recorder_id=pretrained_rid).load_object("trained_model")
             logger.info("  → 预训练模型加载成功")
         except Exception as e:
             logger.error("  → 预训练模型加载失败: %s，回退到独立训练模式", e)

@@ -162,24 +162,38 @@ def build_task(config: dict) -> dict:
     handler_cfg["label"] = label_expr
     logger.info("使用 label: %s → %s", primary_label, label_expr)
 
-    # xs_ret_Nd 标签注入 CSMedianSubtract learn_processor（截面中位数减法）
-    # 仅影响 xs_ret_Nd，不影响其他标签
+    # xs_ret_Nd 标签注入 CSMedianSubtract（截面中位数减法）
+    # 仅影响 xs_ret_Nd 的 label，不影响 feature 标准化
+    # 2026-07-09 修复：原逻辑当 handler_cfg 无 learn_processors 时，
+    #   existing_lp=[] 会导致覆盖 Alpha158 类默认的 RobustZScoreNorm+DropnaLabel，
+    #   使 feature 丢失标准化。现改为：仅当用户显式配置了 learn_processors 时才追加，
+    #   否则将 CSMedianSubtract 放入 infer_processors（不影响 feature 标准化）。
     import re
     is_xs_ret = bool(re.match(r"^xs_ret_\d+d$", primary_label))
     if is_xs_ret:
-        # 注入 CSMedianSubtract，与 handler 默认的 learn_processors 合并
-        existing_lp = handler_cfg.get("learn_processors", [])
-        # 用 dict config 形式让 Qlib init_instance_by_config 能实例化
         cs_median_cfg = {
             "class": "CSMedianSubtract",
             "module_path": "qlib_pipeline.train",
             "kwargs": {"fields_group": "label"},
         }
-        if isinstance(existing_lp, list):
-            handler_cfg["learn_processors"] = existing_lp + [cs_median_cfg]
+        existing_lp = handler_cfg.get("learn_processors")
+        if existing_lp is not None:
+            # 用户显式配置了 learn_processors → 追加 CSMedianSubtract
+            if isinstance(existing_lp, list):
+                handler_cfg["learn_processors"] = existing_lp + [cs_median_cfg]
+            else:
+                handler_cfg["learn_processors"] = [existing_lp, cs_median_cfg]
         else:
-            handler_cfg["learn_processors"] = [existing_lp, cs_median_cfg]
-        logger.info("xs_ret 标签注入 CSMedianSubtract learn_processor")
+            # 用户未配置 learn_processors → 不覆盖 Alpha158 默认值
+            # 将 CSMedianSubtract 放入 infer_processors，仅作用于 label 推理
+            existing_ip = handler_cfg.get("infer_processors", [])
+            if isinstance(existing_ip, list):
+                handler_cfg["infer_processors"] = existing_ip + [cs_median_cfg]
+            elif existing_ip:
+                handler_cfg["infer_processors"] = [existing_ip, cs_median_cfg]
+            else:
+                handler_cfg["infer_processors"] = [cs_median_cfg]
+        logger.info("xs_ret 标签注入 CSMedianSubtract（infer_processor，不覆盖默认标准化器）")
 
     # Data handler
     handler_cfg = {

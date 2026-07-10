@@ -482,10 +482,11 @@ def cmd_backtest(args):
     # 输出选股推荐
     if hasattr(args, "pick_topk") and args.pick_topk > 0:
         logger.info("[附加] 生成选股推荐 Top-%d ...", args.pick_topk)
-        print_stock_picks(pred_df, top_k=args.pick_topk, output_dir="output/picks",
+        picks_dir = _make_run_dir("output/picks")
+        print_stock_picks(pred_df, top_k=args.pick_topk, output_dir=picks_dir,
                          recorder_id=ba_rid, config_snapshot=config,
                          model_tag=model_tag, run_date=run_date)
-        logger.info("[附加] ✓ 选股推荐已保存到 output/picks/%s", run_date)
+        logger.info("[附加] ✓ 选股推荐已保存到: %s", picks_dir)
 
     logger.info("=" * 60)
     logger.info("回测流程全部完成!")
@@ -879,18 +880,20 @@ def cmd_full(args):
         pick_topk = getattr(args, "pick_topk", 30)
         if pick_topk > 0:
             logger.info("  → 正在生成 Top-%d 选股推荐 ...", pick_topk)
-            print_stock_picks(pred_df, top_k=pick_topk, output_dir="output/picks",
+            picks_dir = _make_run_dir("output/picks")
+            print_stock_picks(pred_df, top_k=pick_topk, output_dir=picks_dir,
                            recorder_id=ba_rid, config_snapshot=config,
                            model_tag=model_tag, run_date=run_date)
-            logger.info("  ✓ 选股推荐已保存到 output/picks/%s", run_date)
+            logger.info("  ✓ 选股推荐已保存到: %s", picks_dir)
 
         # 保存买卖点记录
         from qlib_pipeline.backtest import save_trade_records
         backtopk = config.get("backtest", {}).get("strategy", {}).get("kwargs", {}).get("topk", 50)
         backdrop = config.get("backtest", {}).get("strategy", {}).get("n_drop", 5)
         init_cash = config.get("backtest", {}).get("backtest", {}).get("account", 100000000)
+        trades_dir = _make_run_dir("output/trades")
         save_trade_records(pred_df, topk=backtopk, n_drop=backdrop, init_cash=init_cash,
-                         report_normal_df=report_normal_df, output_dir="output/trades",
+                         report_normal_df=report_normal_df, output_dir=trades_dir,
                          model_tag=model_tag, run_date=run_date)
     except Exception as e:
         logger.error("[阶段 3/3] 图表/选股生成失败: %s", e)
@@ -1005,10 +1008,10 @@ def cmd_rolling(args):
         config, n_folds=args.n_folds,
         window_years=args.window_years,
         step_months=args.step_months,
-        output_dir=_make_run_dir(args.output_dir),
+        output_dir=(run_dir := _make_run_dir(args.output_dir)),
     )
     logger.info("[步骤 1/1] ✓ 滚动训练完成: %d 个窗口", len(df))
-    logger.info("  → 结果已保存到: %s", args.output_dir)
+    logger.info("  → 结果已保存到: %s", run_dir)
 
 
 def cmd_drift(args):
@@ -1048,12 +1051,13 @@ def cmd_drift(args):
         logger.info("  → 概念漂移检测: %d 个预警", int(drift_df["drift_warning"].sum()))
 
         # TODO: feature_stability() 需要跨折特征重要性列表，依赖 rolling.py 改造完成后接入
-        report = generate_drift_report(psi_df, drift_df, 0.0, output_dir=_make_run_dir(args.output_dir))
+        run_dir = _make_run_dir(args.output_dir)
+        report = generate_drift_report(psi_df, drift_df, 0.0, output_dir=run_dir)
         logger.info("[步骤 3/3] ✓ 漂移检测完成")
         logger.info("  → 总特征数: %d, 显著漂移特征数: %d",
                     report["psi"]["n_features"],
                     report["psi"]["n_significant_drift"])
-        logger.info("  → 报告已保存到: %s", args.output_dir)
+        logger.info("  → 报告已保存到: %s", run_dir)
     except Exception as e:
         logger.error("漂移检测失败: %s", e)
         logger.info("提示: 漂移检测需要完整的 train/test 数据集")
@@ -1086,13 +1090,14 @@ def cmd_ic_stability(args):
 
     logger.info("[步骤 4/4] 生成 IC 稳定性报告 (ICIR / 衰减曲线 / 分层分析) ...")
     from qlib_pipeline.ic_stability import generate_ic_stability_report
+    run_dir = _make_run_dir(args.output_dir)
     report = generate_ic_stability_report(
         ic_series,
-        output_dir=_make_run_dir(args.output_dir),
+        output_dir=run_dir,
     )
     logger.info("[步骤 4/4] ✓ IC 稳定性分析完成")
     logger.info("  → ICIR: %.4f", report["icir"])
-    logger.info("  → 报告已保存到: %s", args.output_dir)
+    logger.info("  → 报告已保存到: %s", run_dir)
 
     # ── 实验追踪与协议检查（第 2.2 节 + 第 8.2 节）──
     if hasattr(args, "phase"):
@@ -1147,10 +1152,10 @@ def cmd_tscv(args):
     df = run_tscv(
         config, n_splits=args.n_splits,
         purge_days=args.purge_days, embargo_days=args.embargo_days,
-        output_dir=_make_run_dir(args.output_dir),
+        output_dir=(run_dir := _make_run_dir(args.output_dir)),
     )
     logger.info("[步骤 1/1] ✓ TSCV 完成: %d folds", len(df))
-    logger.info("  → 结果已保存到: %s", args.output_dir)
+    logger.info("  → 结果已保存到: %s", run_dir)
 
 
 def cmd_regime(args):
@@ -1190,7 +1195,7 @@ def cmd_regime(args):
         else:
             logger.error("基准文件不存在: %s", benchmark_path)
             return
-        logger.info("  → 基准数据: 600000, 数据点数: %d", len(price))
+        logger.info("  → 基准数据: %s, 数据点数: %d", benchmark_code, len(price))
         logger.info("[步骤 1/2] ✓ 基准数据加载完成")
 
         logger.info("[步骤 2/2] 进行市场阶段分类与稳定性分析 ...")
@@ -1209,9 +1214,10 @@ def cmd_regime(args):
         logger.info("  → 真实 RankIC 序列: %d 个交易日, IC 均值=%.4f", len(ic_series), ic_series.mean())
 
         from qlib_pipeline.regime import regime_analysis
-        df = regime_analysis(ic_series, regime_df, output_dir=_make_run_dir(args.output_dir))
+        run_dir = _make_run_dir(args.output_dir)
+        df = regime_analysis(ic_series, regime_df, output_dir=run_dir)
         logger.info("[步骤 2/2] ✓ 市场阶段分析完成: %d 个阶段", len(df))
-        logger.info("  → 报告已保存到: %s", args.output_dir)
+        logger.info("  → 报告已保存到: %s", run_dir)
     except Exception as e:
         logger.error("市场阶段分析失败: %s", e)
 
@@ -1226,13 +1232,15 @@ def cmd_sensitivity(args):
     if args.param:
         values = [float(v) for v in args.values.split(",")]
         logger.info("[步骤 1/1] 单参数扫描: %s = %s", args.param, values)
-        df = hyperparameter_sensitivity(config, args.param, values, output_dir=_make_run_dir(args.output_dir))
+        run_dir = _make_run_dir(args.output_dir)
+        df = hyperparameter_sensitivity(config, args.param, values, output_dir=run_dir)
         logger.info("[步骤 1/1] ✓ 完成: %s -> %d 个扫描点", args.param, len(df))
     else:
         logger.info("[步骤 1/1] 运行敏感性分析套件 (全部关键参数) ...")
-        results = run_sensitivity_suite(config, output_dir=_make_run_dir(args.output_dir))
+        run_dir = _make_run_dir(args.output_dir)
+        results = run_sensitivity_suite(config, output_dir=run_dir)
         logger.info("[步骤 1/1] ✓ 敏感性套件完成: %d 个参数", len(results))
-    logger.info("  → 结果已保存到: %s", args.output_dir)
+    logger.info("  → 结果已保存到: %s", run_dir)
 
 
 def cmd_key_years(args):
@@ -1254,10 +1262,11 @@ def cmd_key_years(args):
     logger.info("[步骤 1/1] 开始关键年份独立回测 ...")
 
     from qlib_pipeline.regime import key_year_backtest
-    df = key_year_backtest(config, years=years, output_dir=_make_run_dir(args.output_dir),
+    run_dir = _make_run_dir(args.output_dir)
+    df = key_year_backtest(config, years=years, output_dir=run_dir,
                            pretrained_rid=args.rid)
     logger.info("[步骤 1/1] ✓ 关键年份回测完成: %d 个年份", len(df))
-    logger.info("  → 结果已保存到: %s", args.output_dir)
+    logger.info("  → 结果已保存到: %s", run_dir)
 
 
 def cmd_update(args):
@@ -1408,7 +1417,8 @@ def cmd_validate_picks(args):
         return
 
     val_df = pd.DataFrame(validation_results)
-    report = validator.generate_validation_report(val_df, output_dir=_make_run_dir(args.output_dir))
+    run_dir = _make_run_dir(args.output_dir)
+    report = validator.generate_validation_report(val_df, output_dir=run_dir)
 
     logger.info("=" * 60)
     logger.info("验证报告摘要:")
@@ -1449,9 +1459,10 @@ def cmd_pick(args):
     print_summary(report_normal_df, analysis_df, config=config)
     if args.date:
         logger.info("  → 指定日期: %s", args.date)
-    picks = print_stock_picks(pred_df, top_k=args.topk, date=args.date, output_dir=_make_run_dir(args.output_dir),
+    run_dir = _make_run_dir(args.output_dir)
+    picks = print_stock_picks(pred_df, top_k=args.topk, date=args.date, output_dir=run_dir,
                            recorder_id=args.rid, config_snapshot=config)
-    logger.info("[步骤 2/2] ✓ 选股推荐已保存到: %s", args.output_dir)
+    logger.info("[步骤 2/2] ✓ 选股推荐已保存到: %s", run_dir)
     return picks
 
 
@@ -1483,27 +1494,33 @@ def cmd_explain(args):
     config = load_workflow_config(args.config)
     init_qlib_env(config)
 
-    from research.explain import generate_shap_report, get_shap_feature_importance, explain_single_prediction
-    from qlib_pipeline.model import Model
-    from qlib_pipeline.dataset import Dataset
+    from research.explain import (
+        generate_shap_report, compute_shap_values,
+        get_shap_feature_importance, explain_single_prediction,
+    )
+    from qlib.utils import init_instance_by_config
 
-    # 构建数据集
-    dataset = Dataset(config).build()
+    # 构建数据集（与 cmd_drift / cmd_ic_stability 一致的构建方式）
+    task = build_task(config)
+    dataset = init_instance_by_config(task["dataset"])
 
     # 加载已训练模型（优先从 MLflow 加载，否则重新训练）
     experiment = getattr(args, "experiment", "qlib_pipeline")
     if getattr(args, "rid", None):
         from qlib.workflow import R
         recorder = R.get_recorder(recorder_id=args.rid, experiment_name=experiment)
-        model = recorder.load_object("model.pkl")
+        model = recorder.load_object("trained_model")
+        logger.info("从 recorder %s 加载已训练模型", args.rid)
     else:
-        model = Model(config).build()
+        model = init_instance_by_config(task["model"])
+        logger.info("未指定 --rid，重新训练模型用于 SHAP 分析 ...")
         model.fit(dataset)
 
+    run_dir = _make_run_dir(args.output_dir)
     report = generate_shap_report(
         model=model,
         dataset=dataset,
-        output_dir=_make_run_dir(args.output_dir),
+        output_dir=run_dir,
         segment=getattr(args, "segment", "test"),
         max_samples=getattr(args, "max_samples", 2000),
     )
@@ -1515,24 +1532,24 @@ def cmd_explain(args):
     logger.info("SHAP 分析完成, 前10特征: %s", ", ".join(report.get("top_10_features", [])[:5]))
 
     # --full 模式：输出特征重要性排名和单样本解释
+    # generate_shap_report 不返回 shap_values/feature_names，需重新计算
     if getattr(args, "full", False):
-        logger.info("\n[完整报告] 特征重要性排名:")
-        importance = get_shap_feature_importance(report.get("shap_values"), report.get("feature_names"))
-        if importance:
-            for rank, (feat, imp) in enumerate(importance.items()):
-                logger.info("  %2d. %-30s %.4f", rank + 1, feat, imp)
+        feature_df, shap_values, feature_names = compute_shap_values(
+            model, dataset,
+            segment=getattr(args, "segment", "test"),
+            max_samples=getattr(args, "max_samples", 2000),
+        )
+        if len(shap_values) > 0:
+            logger.info("\n[完整报告] 特征重要性排名:")
+            importance = get_shap_feature_importance(shap_values, feature_names)
+            for _, row in importance.head(20).iterrows():
+                logger.info("  %2d. %-30s %.4f", row["rank"], row["feature"], row["mean_abs_shap"])
 
-        logger.info("\n[完整报告] 单样本解释 (第一个样本):")
-        try:
-            explanation = explain_single_prediction(
-                report.get("shap_values"), report.get("feature_names"), sample_idx=0,
-            )
-            if explanation:
-                for feat, contrib in explanation.items():
-                    direction = "+" if contrib > 0 else ""
-                    logger.info("  %-30s %s%.4f", feat, direction, contrib)
-        except Exception as e:
-            logger.info("  (单样本解释失败: %s)", e)
+            logger.info("\n[完整报告] 单样本解释 (第一个样本):")
+            explanation = explain_single_prediction(shap_values, feature_df, feature_names, sample_idx=0)
+            for _, row in explanation.iterrows():
+                direction = "+" if row["shap_contribution"] > 0 else ""
+                logger.info("  %-30s %s%.4f", row["feature"], direction, row["shap_contribution"])
 
 
 # ===== Phase 4: 风险诊断（风格暴露 / 收益归因 / 容量）=====
@@ -1550,9 +1567,8 @@ def cmd_risk(args):
     init_qlib_env(config)
 
     from research.risk_model import (
-        STYLE_FACTORS, get_style_factor_names,
+        STYLE_FACTORS,
         calculate_style_exposures, check_style_constraints,
-        get_industry_exposures, check_industry_constraints,
     )
 
     logger.info("已注册风格维度: %s", ", ".join(
@@ -1570,7 +1586,7 @@ def cmd_risk(args):
         from qlib.data import D
         import pandas as pd
 
-        # 从回测记录中加载持仓和预测
+        # 从回测记录中加载预测
         experiment_bt = "qlib_pipeline_backtest"
         recorder = R.get_recorder(recorder_id=args.rid, experiment_name=experiment_bt)
         pred_df = recorder.load_object("pred.pkl")
@@ -1581,62 +1597,62 @@ def cmd_risk(args):
 
         logger.info("  ✓ 预测数据加载成功 (%d 行)", len(pred_df))
 
-        # 提取最新持仓
-        pick_date = pred_df.index.get_level_values("datetime")[-1] if hasattr(pred_df.index, "get_level_values") else pred_df.index[-1][0]
-        if hasattr(pred_df, "loc"):
-            latest_weights = pred_df.loc[pick_date].abs() / pred_df.loc[pick_date].abs().sum()
-        else:
-            latest_weights = pd.Series(1.0 / len(pred_df), index=pred_df.index)
+        # 提取最新持仓权重（按预测得分绝对值归一化）
+        pick_date = pred_df.index.get_level_values("datetime")[-1]
+        daily_pred = pred_df.loc[pick_date]
+        if isinstance(daily_pred, pd.Series):
+            daily_pred = daily_pred.to_frame("score")
+        score_col = "score" if "score" in daily_pred.columns else daily_pred.columns[0]
+        latest_weights = daily_pred[score_col].abs()
+        latest_weights = latest_weights / latest_weights.sum()
 
-        # 风格因子暴露诊断
+        # 加载风格因子值（需 Phase A 基本面数据）
+        pick_stocks = list(latest_weights.index)
         needed_features = [v["feature"] for v in STYLE_FACTORS.values()]
-        factor_names = [v["name"] for v in STYLE_FACTORS.values()]
-
-        # 尝试查询因子值，计算暴露
-        exposures = calculate_style_exposures(latest_weights, str(pick_date)[:10])
-
-        if exposures is None:
-            logger.info("  → 风格因子数据不可用（至少 3 个因子缺失）")
-            logger.info("  → 需要 Phase A 将基本面数据导入 features/ 目录")
-        else:
-            logger.info("  ✓ 风格暴露计算完成")
-            max_active = abs(exposures["active_exposure"]).max()
-            all_ok = check_style_constraints(exposures)
-            if all_ok:
-                logger.info("  ✓ 所有风格暴露都在阈值范围内 (|active| ≤ 0.5)")
-            else:
-                n_violations = (~exposures["acceptable"]).sum()
-                logger.warning("  ⚠ %d 个风格因子超出约束 (%d 个可用):", n_violations, len(exposures))
-                for _, row in exposures[~exposures["acceptable"]].itertuples():
-                    logger.warning(
-                        "    %s: active=%.3f (max=0.5)",
-                        getattr(row, "factor_name"), getattr(row, "active_exposure"),
-                    )
-
-        # 行业暴露检查 — 尝试运行（数据不可用则降级）
-        logger.info("\n[行业暴露检查]")
         try:
-            industry_exposures = get_industry_exposures(latest_weights, str(pick_date)[:10])
-            if industry_exposures is not None and not industry_exposures.empty:
-                logger.info("  ✓ 行业暴露计算完成 (%d 个行业)", len(industry_exposures))
-                all_ok = check_industry_constraints(industry_exposures)
-                if all_ok:
-                    logger.info("  ✓ 所有行业暴露都在阈值范围内 (weight ≤ 20.0%%)")
-                else:
-                    n_violations = (~industry_exposures["acceptable"]).sum()
-                    logger.warning("  ⚠ %d 个行业超出约束:", n_violations)
-                    for _, row in industry_exposures[~industry_exposures["acceptable"]].head(5).itertuples():
-                        logger.warning(
-                            "    %s: weight=%.1f%% (max=20.0%%)",
-                            getattr(row, "industry_code"), getattr(row, "weight") * 100,
-                        )
-            else:
-                logger.info("  → 行业分类数据不可用，跳过检查")
+            factor_data = D.features(pick_stocks, needed_features,
+                                      start_time=pick_date, end_time=pick_date)
         except Exception as e:
-            logger.info("  → 行业数据不可用，跳过检查: %s", e)
+            logger.info("  → 风格因子数据不可用: %s", e)
+            logger.info("  → 需要 Phase A 将 $roe/$pb_inv/$volume_cap 等导入 features/")
+            return
+
+        if factor_data is None or factor_data.empty:
+            logger.info("  → 风格因子数据为空，跳过诊断")
+            return
+
+        # 构建因子值 DataFrame（index=stock, columns=feature 名）
+        if isinstance(factor_data.columns, pd.MultiIndex):
+            factor_data.columns = [c[-1] if isinstance(c, tuple) else c for c in factor_data.columns]
+        if factor_data.index.nlevels > 1:
+            factor_df = factor_data.droplevel(0)
+        else:
+            factor_df = factor_data
+
+        # 计算风格暴露
+        exposures = calculate_style_exposures(latest_weights, factor_df)
+        if exposures.empty:
+            logger.info("  → 无可用风格因子（样本不足或字段缺失）")
+            return
+
+        logger.info("  ✓ 风格暴露计算完成（%d 个维度）", len(exposures))
+        exposures_checked, all_ok = check_style_constraints(exposures)
+
+        for style, row in exposures_checked.iterrows():
+            flag = "✓" if row["constraint_ok"] else "⚠"
+            logger.info("    %s %s: active=%+.3fσ (port=%+.3fσ, bench=%+.3fσ) %s",
+                        flag, row["name_cn"],
+                        row["active_exposure"], row["portfolio_exposure"],
+                        row["benchmark_exposure"], row["message"])
+
+        n_violations = (~exposures_checked["constraint_ok"]).sum()
+        if n_violations > 0:
+            logger.warning("  ⚠ %d 个风格因子超出约束 (|active| > 0.5σ)", n_violations)
+        else:
+            logger.info("  ✓ 所有风格暴露在阈值内 (|active| ≤ 0.5σ)")
 
     except Exception as e:
-        logger.warning("  → 加载回测记录失败: %s", e)
+        logger.warning("  → 风险诊断失败: %s", e)
         logger.info("  → 请确认 recorder_id 正确且回测已完成")
 
 
@@ -1836,8 +1852,9 @@ def cmd_benchmark(args):
         logger.info("[参数] 运行全部实验 (E1-E5)")
 
     from research.benchmark import run_benchmark_suite
-    report = run_benchmark_suite(config, experiments=experiments, output_dir=_make_run_dir(args.output_dir))
-    logger.info("实验完成，报告已保存到: %s", args.output_dir)
+    run_dir = _make_run_dir(args.output_dir)
+    report = run_benchmark_suite(config, experiments=experiments, output_dir=run_dir)
+    logger.info("实验完成，报告已保存到: %s", run_dir)
 
 
 def main():

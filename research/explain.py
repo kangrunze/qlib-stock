@@ -41,7 +41,6 @@ def compute_shap_values(
     dataset,
     segment: str = "test",
     max_samples: int = 2000,
-    background_samples: int = 200,
 ) -> Tuple[pd.DataFrame, np.ndarray, List[str]]:
     """计算 SHAP 值，返回特征矩阵、SHAP 值和特征名列表。
 
@@ -55,7 +54,6 @@ def compute_shap_values(
         dataset: Qlib DatasetH 实例
         segment: 数据集段 ("train" | "valid" | "test")
         max_samples: SHAP 计算的最大样本数（采样以避免 OOM）
-        background_samples: 背景样本数（用于基线期望值）
 
     Returns:
         (feature_df, shap_values, feature_names)
@@ -89,12 +87,6 @@ def compute_shap_values(
     else:
         logger.error("无法从模型中提取 LightGBM Booster")
         return feature_df, np.array([]), feature_names
-
-    # 背景数据（用于计算基线期望值）
-    if background_samples > 0 and len(feature_df) > background_samples:
-        background = feature_df.sample(n=background_samples, random_state=42).values
-    else:
-        background = X[:min(100, len(X))]
 
     # 计算 SHAP
     logger.info("SHAP 计算: %d 样本 × %d 特征 ...", len(X), len(feature_names))

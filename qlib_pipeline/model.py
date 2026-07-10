@@ -47,7 +47,24 @@ class RankLGBModel:
         # 不调用 LGBModel.__init__（它会校验 loss），直接复制其初始化逻辑
         # 但 objective 用 lambdarank 而非 loss
         self.params = {"objective": "lambdarank", "verbosity": -1}
-        self.params.update(kwargs)
+        # 参数名转换：sklearn API 名 → LightGBM 原生名
+        # lgb.train() 不识别 subsample/colsample_bytree，必须转为 bagging_fraction/feature_fraction
+        # 否则这两个参数会被静默忽略，导致 Optuna 搜索 subsample/colsample 时所有 trial 等效
+        param_map = {
+            "subsample": "bagging_fraction",
+            "colsample_bytree": "feature_fraction",
+            "subsample_freq": "bagging_freq",
+        }
+        converted = {}
+        for k, v in kwargs.items():
+            if k in param_map:
+                converted[param_map[k]] = v
+            else:
+                converted[k] = v
+        # bagging_freq 默认设为 1，使 bagging_fraction 生效（否则 LightGBM 默认 freq=0 不抽样）
+        if "bagging_fraction" in converted and "bagging_freq" not in converted:
+            converted["bagging_freq"] = 1
+        self.params.update(converted)
         self.early_stopping_rounds = early_stopping_rounds
         self.num_boost_round = num_boost_round
         self.model = None
@@ -82,11 +99,12 @@ class RankLGBModel:
                     group_sizes = pd.Series(dates).groupby(dates).size().values
                 else:
                     # 非多索引，整段作为一个 group
+                    dates = None
                     group_sizes = np.array([len(x)])
 
                 # LambdaRank 要求标签为非负整数（代表相关性等级）
                 # 将连续收益率标签按日期内分位数转为 0-4 的整数等级
-                y_ranked = self._labels_to_rank(y, dates if isinstance(x.index, pd.MultiIndex) else None)
+                y_ranked = self._labels_to_rank(y, dates)
 
                 lgb_ds = lgb.Dataset(x.values, label=y_ranked, group=group_sizes)
                 ds_l.append((lgb_ds, key))
@@ -97,7 +115,7 @@ class RankLGBModel:
         if dates is None:
             # 无日期分组，全局分位数
             ranks = pd.qcut(y, q=5, labels=False, duplicates="drop")
-            return ranks.astype(int).clip(0, 4).values
+            return np.asarray(ranks, dtype=int).clip(0, 4)
         # 按日期分组，每日内分 5 档
         y_series = pd.Series(y, index=dates)
         ranked = np.zeros(len(y), dtype=int)
@@ -108,7 +126,7 @@ class RankLGBModel:
                 ranked[mask] = 2  # 样本太少，统一给中间等级
             else:
                 ranks = pd.qcut(vals, q=5, labels=False, duplicates="drop")
-                ranked[mask] = ranks.astype(int).clip(0, 4).values
+                ranked[mask] = np.asarray(ranks, dtype=int).clip(0, 4)
         return ranked
 
     def fit(self, dataset, num_boost_round=None, **kwargs):

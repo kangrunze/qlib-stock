@@ -521,8 +521,8 @@ def run_qlib_workflow(provider_uri: str, chart_dir: Path, freq: str = "day"):
     # Skip exists_qlib_data check due to pandas compatibility issue in qlib 0.9.7
     from pathlib import Path
     qlib_check = Path(provider_uri).expanduser()
-    if not (qlib_check / "calendars" / "day.txt").exists():
-        logger.error("Qlib 数据不存在于 %s，请先运行数据转换", provider_uri)
+    if not (qlib_check / "calendars" / f"{freq}.txt").exists():
+        logger.error("Qlib 数据不存在于 %s (calendars/%s.txt)，请先运行数据转换", provider_uri, freq)
         sys.exit(1)
     logger.info("Qlib 数据检查通过")
 
@@ -540,33 +540,54 @@ def run_qlib_workflow(provider_uri: str, chart_dir: Path, freq: str = "day"):
     logger.info("Qlib 初始化成功 (单线程模式)")
 
     # ---- 工作流配置 ----
-    market = "csi300"
+    # 从 qlib_pipeline/workflow_config.yaml 读取配置，替代硬编码值（保留原值作为 fallback）
+    import yaml
+    from pathlib import Path
+    config_path = Path(__file__).parent / "qlib_pipeline" / "workflow_config.yaml"
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    data_handler_cfg = cfg.get("data_handler", {})
+    market = data_handler_cfg.get("instruments", "csi300")
     benchmark = None  # 不使用基准指数对比（避免 index code 不存在的问题）
 
     data_handler_config = {
-        "start_time": "2008-01-01",
-        "end_time": "2024-12-31",
-        "fit_start_time": "2008-01-01",
-        "fit_end_time": "2020-12-31",
+        "start_time": data_handler_cfg.get("start_time", "2008-01-01"),
+        "end_time": data_handler_cfg.get("end_time", "2024-12-31"),
+        "fit_start_time": data_handler_cfg.get("fit_start_time", "2008-01-01"),
+        "fit_end_time": data_handler_cfg.get("fit_end_time", "2020-12-31"),
         "instruments": market,
-        "freq": freq,
+        "freq": freq,  # freq 仍由函数参数传入，不读 yaml
     }
+
+    # 模型超参：默认硬编码值，再用 yaml 中的 kwargs 覆盖
+    qlib_lgb_cfg = cfg.get("qlib_lgb", {})
+    default_model_kwargs = {
+        "loss": "mse",
+        "colsample_bytree": 0.8879,
+        "learning_rate": 0.0421,
+        "subsample": 0.8789,
+        "lambda_l1": 205.6999,
+        "lambda_l2": 580.9768,
+        "max_depth": 8,
+        "num_leaves": 210,
+        "num_threads": 20,
+    }
+    model_kwargs = {**default_model_kwargs, **qlib_lgb_cfg.get("kwargs", {})}
+
+    # loss=rank 时切换为 RankLGBModel（qlib_pipeline.model），否则用 yaml 中指定的类
+    if model_kwargs.get("loss") == "rank":
+        model_class = "RankLGBModel"
+        model_module_path = "qlib_pipeline.model"
+    else:
+        model_class = qlib_lgb_cfg.get("class", "LGBModel")
+        model_module_path = qlib_lgb_cfg.get("module_path", "qlib.contrib.model.gbdt")
 
     task = {
         "model": {
-            "class": "LGBModel",
-            "module_path": "qlib.contrib.model.gbdt",
-            "kwargs": {
-                "loss": "mse",
-                "colsample_bytree": 0.8879,
-                "learning_rate": 0.0421,
-                "subsample": 0.8789,
-                "lambda_l1": 205.6999,
-                "lambda_l2": 580.9768,
-                "max_depth": 8,
-                "num_leaves": 210,
-                "num_threads": 20,
-            },
+            "class": model_class,
+            "module_path": model_module_path,
+            "kwargs": model_kwargs,
         },
         "dataset": {
             "class": "DatasetH",
@@ -577,11 +598,11 @@ def run_qlib_workflow(provider_uri: str, chart_dir: Path, freq: str = "day"):
                     "module_path": "qlib.contrib.data.handler",
                     "kwargs": data_handler_config,
                 },
-                "segments": {
+                "segments": cfg.get("dataset", {}).get("segments", {
                     "train": ("2008-01-01", "2020-12-31"),
                     "valid": ("2021-01-01", "2022-12-31"),
                     "test": ("2023-01-01", "2024-12-31"),
-                },
+                }),
             },
         },
     }
@@ -602,6 +623,10 @@ def run_qlib_workflow(provider_uri: str, chart_dir: Path, freq: str = "day"):
         logger.info("模型训练完成, recorder_id=%s", rid)
 
     # ---- 回测配置 ----
+    backtest_cfg = cfg.get("backtest", {})
+    strategy_kwargs_cfg = backtest_cfg.get("strategy", {}).get("kwargs", {})
+    backtest_inner_cfg = backtest_cfg.get("backtest", {})
+
     port_analysis_config = {
         "executor": {
             "class": "SimulatorExecutor",
@@ -617,23 +642,23 @@ def run_qlib_workflow(provider_uri: str, chart_dir: Path, freq: str = "day"):
             "kwargs": {
                 "model": model,
                 "dataset": dataset,
-                "topk": 50,
-                "n_drop": 5,
+                "topk": strategy_kwargs_cfg.get("topk", 50),
+                "n_drop": strategy_kwargs_cfg.get("n_drop", 5),
             },
         },
         "backtest": {
-            "start_time": "2023-01-01",
-            "end_time": "2024-12-31",
-            "account": 100000000,
+            "start_time": backtest_inner_cfg.get("start_time", "2023-01-01"),
+            "end_time": backtest_inner_cfg.get("end_time", "2024-12-31"),
+            "account": backtest_inner_cfg.get("account", 100000000),
             "benchmark": benchmark,
-            "exchange_kwargs": {
+            "exchange_kwargs": backtest_inner_cfg.get("exchange_kwargs", {
                 "freq": "day",
-                "limit_threshold": 0.095,
-                "deal_price": "close",
+                "limit_threshold": 0.099,
+                "deal_price": "open",
                 "open_cost": 0.0005,
                 "close_cost": 0.0015,
                 "min_cost": 5,
-            },
+            }),
         },
     }
 

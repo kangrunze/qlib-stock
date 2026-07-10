@@ -200,13 +200,16 @@ class PurgedKFoldCV:
         C.dataset_process_n_worker = 1
 
     def _load_calendar(self) -> List[str]:
-        """Load trading calendar from Qlib data."""
+        """从 Qlib 数据加载交易日历，时间范围从 config 读取（不再硬编码）。"""
         from qlib.data import D
+        dh = self.config.get("data_handler", {})
+        start = dh.get("start_time", "2020-01-01")
+        end = dh.get("end_time", "2025-12-31")
         try:
-            cal = D.calendar(start_time="2020-01-01", end_time="2025-12-31")
+            cal = D.calendar(start_time=start, end_time=end)
             return [str(c) for c in cal]
         except Exception:
-            return pd.date_range("2020-01-01", "2025-12-31", freq="B").strftime("%Y-%m-%d").tolist()
+            return pd.date_range(start, end, freq="B").strftime("%Y-%m-%d").tolist()
 
     def run(self) -> pd.DataFrame:
         """
@@ -231,6 +234,11 @@ class PurgedKFoldCV:
         logger.info("Purged K-Fold TSCV: %d folds, purge=%dd, embargo=%dd",
                      len(splits), self.purge_days, self.embargo_days)
 
+        # 通过 build_task 构建 task dict，确保 label 表达式、CSMedianSubtract、
+        # RankLGBModel 路由等逻辑与主管线完全一致
+        from qlib_pipeline.train import build_task
+        import copy as _copy
+
         for i, (train_dates, test_dates) in enumerate(splits):
             if len(train_dates) < self.min_train_days:
                 logger.warning("Fold %d: 跳过(训练天数=%d < %d)", i, len(train_dates), self.min_train_days)
@@ -240,49 +248,22 @@ class PurgedKFoldCV:
                          i, train_dates[0], train_dates[-1], len(train_dates),
                          test_dates[0], test_dates[-1], len(test_dates))
 
-            fold_config = self.config.copy()
-            fold_config["data_handler"] = {
-                "start_time": train_dates[0],
-                "end_time": test_dates[-1],
-                "fit_start_time": train_dates[0],
-                "fit_end_time": train_dates[-1],
-                "instruments": self.config.get("data_handler", {}).get("instruments", "csi300"),
-            }
-            fold_config["dataset"] = {
-                "handler": handler,
-                "segments": {
-                    "train": [train_dates[0], train_dates[-1]],
-                    "test": [test_dates[0], test_dates[-1]],
-                },
+            # 深拷贝原 config，只更新时间字段，保留 label/processors/freq/qlib_lgb 等
+            fold_config = _copy.deepcopy(self.config)
+            fold_config.setdefault("data_handler", {})
+            fold_config["data_handler"]["start_time"] = train_dates[0]
+            fold_config["data_handler"]["end_time"] = test_dates[-1]
+            fold_config["data_handler"]["fit_start_time"] = train_dates[0]
+            fold_config["data_handler"]["fit_end_time"] = train_dates[-1]
+            fold_config.setdefault("dataset", {})
+            fold_config["dataset"]["handler"] = handler
+            fold_config["dataset"]["segments"] = {
+                "train": [train_dates[0], train_dates[-1]],
+                "test": [test_dates[0], test_dates[-1]],
             }
 
-            handler_cfg = {
-                "class": handler,
-                "module_path": "qlib.contrib.data.handler",
-                "kwargs": fold_config["data_handler"],
-            }
-
-            model_cfg = self.config.get("qlib_lgb", {
-                "class": "LGBModel",
-                "module_path": "qlib.contrib.model.gbdt",
-                "kwargs": {"loss": "mse", "num_threads": 20},
-            })
-
-            task = {
-                "model": {
-                    "class": model_cfg.get("class", "LGBModel"),
-                    "module_path": model_cfg.get("module_path", "qlib.contrib.model.gbdt"),
-                    "kwargs": model_cfg.get("kwargs", {}),
-                },
-                "dataset": {
-                    "class": "DatasetH",
-                    "module_path": "qlib.data.dataset",
-                    "kwargs": {
-                        "handler": handler_cfg,
-                        "segments": fold_config["dataset"]["segments"],
-                    },
-                },
-            }
+            # 通过 build_task 构建 task dict
+            task = build_task(fold_config)
 
             try:
                 dataset = init_instance_by_config(task["dataset"])

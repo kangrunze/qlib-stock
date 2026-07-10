@@ -164,7 +164,7 @@ def download_incremental_data(
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
-                client.download_daily_data, code, start_date_str, None, "qfq"
+                client.download_daily_data, code, start_date_str, None, "hfq"
             ): code
             for code in stock_codes
             if not _is_beijiao(code)
@@ -372,9 +372,10 @@ def update_qlib_bin_files(
 
     ⚠ 已知限制（复权漂移）:
         当前实现仅追加新增日期数据，不会自动回填因除权事件导致的历史价格漂移。
-        如果某股票发生除权除息，其前复权(qfq)历史价格会整体调整，但本函数只写入
-        新增日期的 bin 数据，历史 bin 中的 qfq 价格仍为旧口径，导致 bin 数据和
-        最新下载的 CSV 数据口径可能不一致。
+        如果某股票发生除权除息，其后复权(hfq)历史价格不会变化（后复权以最早价格
+        为锚，新增数据只需追加，不影响历史价格），这是后复权优于前复权的又一原因。
+        但若使用前复权(qfq)，历史价格会整体调整，本函数只写入新增日期的 bin 数据，
+        历史 bin 中的价格仍为旧口径，导致数据不一致。
         如需修正，需要手动触发该股票的全量数据重新下载和 bin 重建（删除其 features
         目录后重新跑全量转换）。
         除权事件会通过 detect_adjust_events() 记录到 data_center/adjust_events.log，

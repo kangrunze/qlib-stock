@@ -174,6 +174,9 @@ class RollingTrainer:
 
         handler = self.config.get("dataset", {}).get("handler", "Alpha158")
 
+        from qlib_pipeline.train import build_task
+        import copy as _copy
+
         for w in windows:
             logger.info("-" * 50)
             logger.info("Fold %d: train=%s~%s, valid=%s~%s, test=%s~%s",
@@ -181,52 +184,26 @@ class RollingTrainer:
                          w["valid"][0], w["valid"][1],
                          w["test"][0], w["test"][1])
 
-            # Build fold-specific config
-            fold_config = self.config.copy()
-            fold_config["data_handler"] = {
-                "start_time": w["train"][0],
-                "end_time": w["test"][1],
-                "fit_start_time": w["train"][0],
-                "fit_end_time": w["train"][1],
-                "instruments": self.config.get("data_handler", {}).get("instruments", "csi300"),
-            }
-            fold_config["dataset"] = {
-                "handler": handler,
-                "segments": {
-                    "train": w["train"],
-                    "valid": w["valid"],
-                    "test": w["test"],
-                }
-            }
-
-            # Build task
-            handler_cfg = {
-                "class": handler,
-                "module_path": "qlib.contrib.data.handler",
-                "kwargs": fold_config["data_handler"],
+            # 深拷贝原 config，只更新时间字段，保留 label/processors/freq/qlib_lgb 等
+            # 这样 build_task() 会正确处理标签表达式、CSMedianSubtract、RankLGBModel 路由
+            fold_config = _copy.deepcopy(self.config)
+            # 更新 data_handler 的时间范围（保留其他字段如 label/instruments/processors）
+            fold_config.setdefault("data_handler", {})
+            fold_config["data_handler"]["start_time"] = w["train"][0]
+            fold_config["data_handler"]["end_time"] = w["test"][1]
+            fold_config["data_handler"]["fit_start_time"] = w["train"][0]
+            fold_config["data_handler"]["fit_end_time"] = w["train"][1]
+            # 更新 dataset.segments 为该折的时间窗口
+            fold_config.setdefault("dataset", {})
+            fold_config["dataset"]["handler"] = handler
+            fold_config["dataset"]["segments"] = {
+                "train": w["train"],
+                "valid": w["valid"],
+                "test": w["test"],
             }
 
-            model_cfg = self.config.get("qlib_lgb", {
-                "class": "LGBModel",
-                "module_path": "qlib.contrib.model.gbdt",
-                "kwargs": {"loss": "mse", "num_threads": 20},
-            })
-
-            task = {
-                "model": {
-                    "class": model_cfg.get("class", "LGBModel"),
-                    "module_path": model_cfg.get("module_path", "qlib.contrib.model.gbdt"),
-                    "kwargs": model_cfg.get("kwargs", {}),
-                },
-                "dataset": {
-                    "class": "DatasetH",
-                    "module_path": "qlib.data.dataset",
-                    "kwargs": {
-                        "handler": handler_cfg,
-                        "segments": fold_config["dataset"]["segments"],
-                    },
-                },
-            }
+            # 通过 build_task 构建 task dict，确保与主管线逻辑完全一致
+            task = build_task(fold_config)
 
             try:
                 dataset = init_instance_by_config(task["dataset"])
@@ -372,14 +349,9 @@ def rolling_cross_validation(
     handler_name = config.get("dataset", {}).get("handler", "Alpha158")
     instruments = dh_cfg.get("instruments", "csi300")
 
-    # model 配置（每折用同一份 config 构建新实例）
-    model_cfg = config.get("qlib_lgb", {
-        "class": "LGBModel",
-        "module_path": "qlib.contrib.model.gbdt",
-        "kwargs": {"loss": "mse", "num_threads": 20},
-    })
-
     fold_ics: List[Dict] = []
+    import copy as _copy
+    from qlib_pipeline.train import build_task
 
     for w in windows:
         fold_segments = {
@@ -401,34 +373,25 @@ def rolling_cross_validation(
                     },
                 })
             else:
-                # fallback: 完整构建 handler（每折独立 fetch 数据，较慢）
-                fold_handler_kwargs = dict(dh_cfg)
-                fold_handler_kwargs.update({
-                    "start_time": w["train"][0],
-                    "end_time": w["test"][1],
-                    "fit_start_time": w["train"][0],
-                    "fit_end_time": w["train"][1],
-                    "instruments": instruments,
-                })
-                fold_dataset = init_instance_by_config({
-                    "class": "DatasetH",
-                    "module_path": "qlib.data.dataset",
-                    "kwargs": {
-                        "handler": {
-                            "class": handler_name,
-                            "module_path": "qlib.contrib.data.handler",
-                            "kwargs": fold_handler_kwargs,
-                        },
-                        "segments": fold_segments,
-                    },
-                })
+                # fallback: 通过 build_task 构建，确保 label/processors/RankLGBModel 路由正确
+                fold_config = _copy.deepcopy(config)
+                fold_config.setdefault("data_handler", {})
+                fold_config["data_handler"]["start_time"] = w["train"][0]
+                fold_config["data_handler"]["end_time"] = w["test"][1]
+                fold_config["data_handler"]["fit_start_time"] = w["train"][0]
+                fold_config["data_handler"]["fit_end_time"] = w["train"][1]
+                fold_config.setdefault("dataset", {})
+                fold_config["dataset"]["handler"] = handler_name
+                fold_config["dataset"]["segments"] = fold_segments
+                fold_task = build_task(fold_config)
+                fold_dataset = init_instance_by_config(fold_task["dataset"])
 
-            # 构建并训练新 model 实例（每折独立训练，避免状态污染）
-            fold_model = init_instance_by_config({
-                "class": model_cfg.get("class", "LGBModel"),
-                "module_path": model_cfg.get("module_path", "qlib.contrib.model.gbdt"),
-                "kwargs": model_cfg.get("kwargs", {}),
-            })
+            # 构建 model 实例（通过 build_task 确保 loss=rank 路由正确）
+            fold_config_for_model = _copy.deepcopy(config)
+            fold_config_for_model.setdefault("dataset", {})
+            fold_config_for_model["dataset"]["segments"] = fold_segments
+            fold_task = build_task(fold_config_for_model)
+            fold_model = init_instance_by_config(fold_task["model"])
             fold_model.fit(fold_dataset)
 
             # 评估该折（复用 ic_stability.evaluate_fold，含 Newey-West 显著性）

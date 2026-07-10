@@ -390,14 +390,14 @@ def print_summary(report_normal_df, analysis_df, config: dict = None, picks_df =
                         exposures = calculate_style_exposures(weights, factor_df)
                         if not exposures.empty:
                             print(f"  ✓ 风格暴露计算完成（%d 个维度）" % len(exposures))
-                            for _, row in exposures.iterrows():
-                                flag = " ⚠" if abs(row["active_exposure"]) > 0.5 else ""
+                            exposures_checked, all_ok = check_style_constraints(exposures)
+                            for _, row in exposures_checked.iterrows():
+                                flag = " ⚠" if not row["constraint_ok"] else ""
                                 print(f"    {row['name_cn']:6s}: active={row['active_exposure']:+.3f}σ (port={row['portfolio_exposure']:+.3f}σ, bench={row['benchmark_exposure']:+.3f}σ){flag}")
 
-                            # 检查是否超标
-                            violations = check_style_constraints(exposures)
-                            if violations:
-                                print(f"  ⚠ 风格暴露超标: {', '.join(violations)}")
+                            if not all_ok:
+                                n_viol = (~exposures_checked["constraint_ok"]).sum()
+                                print(f"  ⚠ 风格暴露超标: {n_viol} 个因子超出 |active| > 0.5σ")
                             else:
                                 print(f"  ✓ 所有风格暴露在阈值内 (|active| ≤ 0.5σ)")
                             exposure_calculated = True
@@ -654,9 +654,11 @@ def save_trade_records(pred_df, topk: int = 50, n_drop: int = 5,
                 ret_col = _extract_series(report_normal_df, "return")
                 if ret_col is not None and len(ret_col) > 0:
                     cum_ret = (1 + ret_col).cumprod()
+                    # 预计算 dates 集合，避免 O(n²) 列表推导
+                    pred_date_set = {pd.Timestamp(dt).strftime("%Y-%m-%d") for dt in dates}
                     for d in cum_ret.index:
                         date_str = pd.Timestamp(d).strftime("%Y-%m-%d")
-                        if date_str in [pd.Timestamp(dt).strftime("%Y-%m-%d") for dt in dates]:
+                        if date_str in pred_date_set:
                             portfolio_values[date_str] = init_cash * float(cum_ret.loc[d])
             except Exception:
                 pass

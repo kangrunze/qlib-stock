@@ -28,12 +28,12 @@ logger = logging.getLogger(__name__)
 STYLE_FACTORS = {
     "size": {
         "name": "规模",
-        "description": "对数值化对数市值",
+        "description": "对数市值",
         "feature": "$volume_cap",
     },
     "value": {
         "name": "估值",
-        "description": "PB倒数 = 对数市值 / 账面价值",
+        "description": "PB 倒数 = 账面价值 / 市值",
         "feature": "$pb_inv",
     },
     "momentum": {
@@ -143,10 +143,13 @@ def calculate_style_exposures(
             "portfolio_exposure": port_exposure,
             "benchmark_exposure": bench_exposure,
             "active_exposure": active_exposure,
-            "factor_mean": fv_mean,   # 原始因子均值（供参考）
-            "factor_std": fv_std,     # 原始因子截面标准差（供参考）
+            "factor_mean": fv_mean,
+            "factor_std": fv_std,
         })
 
+    if not result:
+        logger.warning("所有风格因子均不可用，返回空 DataFrame")
+        return pd.DataFrame()
     return pd.DataFrame(result).set_index("style")
 
 

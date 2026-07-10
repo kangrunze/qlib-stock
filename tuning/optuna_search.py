@@ -54,87 +54,60 @@ def _init_qlib_once(config: dict):
     C.dataset_process_n_worker = 1
 
 
-def _single_trial_ic(config: dict, trial_params: dict) -> Optional[float]:
+def _single_trial_ic(config: dict, trial_params: dict,
+                     dataset=None) -> Tuple[Optional[float], Optional[object]]:
     """单次 Optuna trial：训练模型并返回验证集 IC 均值。
 
-    优先使用 rolling.py 的多折滚动平均 IC（第 7.3 节建议），
-    退化为单一切分 IC 均值（方差较大但可用）。
+    通过 train.build_task() 构建任务，确保与主管线一致（label/processors/RankLGBModel）。
+    评估在 **valid 段**进行，避免验证集泄露（test 段仅用于最终评估）。
+
+    优化：dataset 可复用（handler 配置不变时数据相同），避免每次 trial 重新加载 ~10 分钟数据。
+    model 每次新建（参数不同）。
 
     Args:
         config: workflow config dict
         trial_params: 本次 trial 的超参数覆盖
+        dataset: 可选，复用的 DatasetH 实例；为 None 时新建
 
     Returns:
-        valid IC 均值（越大越好），失败时返回 None
+        (valid IC 均值, dataset 实例)；失败时返回 (None, dataset)
     """
     from qlib.utils import init_instance_by_config
+    from qlib_pipeline.train import build_task
+    import copy as _copy
 
-    handler = config.get("dataset", {}).get("handler", "Alpha158")
-    segments = config.get("dataset", {}).get("segments", {})
-
-    # 合并超参数
-    model_kwargs = config.get("qlib_lgb", {}).get("kwargs", {}).copy()
-    model_kwargs.update(trial_params)
-    seed = config.get("experiment", {}).get("random_seed", 42)
-    model_kwargs.setdefault("seed", seed)
-
-    handler_cfg = {
-        "class": handler,
-        "module_path": "qlib.contrib.data.handler",
-        "kwargs": config.get("data_handler", {}),
-    }
-
-    task = {
-        "model": {
-            "class": "LGBModel",
-            "module_path": "qlib.contrib.model.gbdt",
-            "kwargs": model_kwargs,
-        },
-        "dataset": {
-            "class": "DatasetH",
-            "module_path": "qlib.data.dataset",
-            "kwargs": {
-                "handler": handler_cfg,
-                "segments": segments,
-            },
-        },
-    }
+    # 深拷贝 config 并合并超参数
+    merged = _copy.deepcopy(config)
+    merged.setdefault("qlib_lgb", {}).setdefault("kwargs", {}).update(trial_params)
+    seed = merged.get("experiment", {}).get("random_seed", 42)
+    merged["qlib_lgb"]["kwargs"].setdefault("seed", seed)
 
     try:
-        dataset = init_instance_by_config(task["dataset"])
+        task = build_task(merged)
+        # 复用 dataset（handler 配置不变时数据相同，避免重复加载 ~10 分钟）
+        if dataset is None:
+            dataset = init_instance_by_config(task["dataset"])
         model = init_instance_by_config(task["model"])
         model.fit(dataset)
 
         from qlib_pipeline.ic_stability import get_ic_series
-
-        # 优先尝试 rolling 多折平均 IC（降低单一切分的方差）
-        try:
-            from qlib_pipeline.rolling import rolling_cross_validation
-            rolling_result = rolling_cross_validation(config, model=model, dataset=dataset)
-            if rolling_result and "fold_ics" in rolling_result and len(rolling_result["fold_ics"]) >= 3:
-                fold_ic_means = [fold["ic_mean"] for fold in rolling_result["fold_ics"] if fold.get("ic_mean") is not None]
-                if fold_ic_means:
-                    ic_mean = float(np.mean(fold_ic_means))
-                    logger.debug("Trial IC (rolling %d-fold): %.6f", len(fold_ic_means), ic_mean)
-                    return ic_mean
-        except Exception as e:
-            logger.debug("Rolling 多折 IC 不可用 (%s)，回退到单一切分", e)
-
-        # 退化：单一切分 IC 均值
-        ic_series = get_ic_series(model, dataset)
+        # 在 valid 段评估，避免 test 段泄露
+        ic_series = get_ic_series(model, dataset, segment="valid")
         if len(ic_series) == 0:
-            return None
-
+            return None, dataset
         ic_mean = float(ic_series.mean())
-        logger.debug("Trial IC (single split): %.6f", ic_mean)
-        return ic_mean
+        logger.info("Trial valid IC: %.6f (lr=%.4f, leaves=%d, depth=%d)",
+                    ic_mean, trial_params.get("learning_rate", 0),
+                    trial_params.get("num_leaves", 0), trial_params.get("max_depth", 0))
+        return ic_mean, dataset
 
     except Exception as e:
-        logger.debug("Trial 失败 (%s): %s", trial_params, e)
-        return None
+        logger.warning("Trial 失败 (lr=%.4f): %s", trial_params.get("learning_rate", 0), e)
+        return None, dataset
 
 
-def _objective(trial, config: dict, base_params: dict) -> float:
+def _objective(trial, config: dict, base_params: dict,
+               shared_state: dict) -> float:
     """Optuna objective function: 最大化验证集 IC 均值。
 
     搜索空间设计（第 7.3/C1 节收窄原则）：
@@ -148,9 +121,9 @@ def _objective(trial, config: dict, base_params: dict) -> float:
       - lambda_l1: log-uniform, 1e-8 ~ 100
       - lambda_l2: log-uniform, 1e-8 ~ 100
       - min_child_samples: int, 10 ~ 100
-    """
-    import optuna
 
+    shared_state 用于在 trials 之间复用 dataset 实例（避免每次重新加载 ~10 分钟数据）。
+    """
     params = {
         "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
         "num_leaves": trial.suggest_int("num_leaves", 15, 63, step=4),
@@ -160,10 +133,13 @@ def _objective(trial, config: dict, base_params: dict) -> float:
         "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 100.0, log=True),
         "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 100.0, log=True),
         "min_child_samples": trial.suggest_int("min_child_samples", 10, 100),
-        "num_threads": base_params.get("num_threads", 20),
+        "num_threads": base_params.get("num_threads", 8),
     }
 
-    ic_mean = _single_trial_ic(config, params)
+    ic_mean, dataset = _single_trial_ic(config, params, dataset=shared_state.get("dataset"))
+    # 缓存 dataset 供后续 trial 复用
+    shared_state["dataset"] = dataset
+
     if ic_mean is None:
         return float("-inf")
 
@@ -211,23 +187,29 @@ def run_optuna_search(
     base_params = config.get("qlib_lgb", {}).get("kwargs", {})
 
     # 创建 Optuna study（最大化 IC）
-    storage_path = str(output_path / f"{study_name}.db")
+    # 每次运行使用带时间戳的 study_name，避免 load_if_exists 加载旧 study 导致 trial 结果混淆
+    from datetime import datetime
+    study_name_ts = f"{study_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    storage_path = str(output_path / f"{study_name_ts}.db")
     study = optuna.create_study(
-        study_name=study_name,
+        study_name=study_name_ts,
         storage=f"sqlite:///{storage_path}",
         direction="maximize",
-        load_if_exists=True,
+        load_if_exists=False,
         pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=5),
     )
 
     logger.info(
         "Optuna 超参数搜索: study=%s, n_trials=%d, timeout=%ds, phase=%s",
-        study_name, n_trials, timeout, phase,
+        study_name_ts, n_trials, timeout, phase,
     )
+
+    # shared_state 在 trials 之间复用 dataset（避免每次重新加载 ~10 分钟数据）
+    shared_state = {"dataset": None}
 
     # 运行优化
     study.optimize(
-        lambda trial: _objective(trial, config, base_params),
+        lambda trial: _objective(trial, config, base_params, shared_state),
         n_trials=n_trials,
         timeout=timeout,
         show_progress_bar=True,

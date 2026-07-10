@@ -71,7 +71,8 @@ def _filter_stock_list(df: pd.DataFrame) -> pd.DataFrame:
     """
     过滤股票列表:
     1. 排除北交所
-    2. 排除ST股票
+    2. ST 股票不再在下载阶段永久剔除，而是保留数据，在回测时按 PIT 状态动态过滤
+       （2026-07-09 修复幸存者偏差：用当前 ST 状态过滤历史样本会偏向幸存者）
     3. 排除上市不足250个交易日的（通过快速检查每个code的最小日期）
 
     Args:
@@ -89,16 +90,24 @@ def _filter_stock_list(df: pd.DataFrame) -> pd.DataFrame:
         df = df[~mask_bj]
         logger.info("排除北交所: -%d, 剩余: %d", n_bj, len(df))
 
-    # 2. 排除ST
+    # 2. ST 处理（2026-07-09 修复幸存者偏差）
+    #    原逻辑：在下载阶段用当前 ST 状态永久剔除 → 幸存者偏差
+    #    新逻辑：保留 ST 股票的历史数据，仅在 is_st 列标记当前状态
+    #    回测时由 DataHandler 按每日 PIT 状态动态过滤
     if EXCLUDE_ST:
         if "is_st" in df.columns:
-            n_st = df["is_st"].sum()
-            df = df[~df["is_st"]]
-            logger.info("排除ST: -%d, 剩余: %d", n_st, len(df))
+            n_st_current = int(df["is_st"].sum())
+            logger.info(
+                "当前 ST 股票: %d 只（保留历史数据，回测时按 PIT 状态动态过滤）",
+                n_st_current,
+            )
         elif "name" in df.columns:
-            n_st = df["name"].str.contains("ST", na=False).sum()
-            df = df[~df["name"].str.contains("ST", na=False)]
-            logger.info("排除ST: -%d, 剩余: %d", n_st, len(df))
+            n_st_current = int(df["name"].str.contains("ST", na=False).sum())
+            df["is_st"] = df["name"].str.contains("ST", na=False)
+            logger.info(
+                "当前 ST 股票: %d 只（保留历史数据，回测时按 PIT 状态动态过滤）",
+                n_st_current,
+            )
 
     return df.reset_index(drop=True)
 
@@ -124,7 +133,7 @@ def _check_listed_days(client: AKShareClient, codes: List[str]) -> List[str]:
 
     with ThreadPoolExecutor(max_workers=check_workers) as executor:
         futures = {
-            executor.submit(client.download_daily_data, code, START_DATE, None, "qfq"): code
+            executor.submit(client.download_daily_data, code, START_DATE, None, "hfq"): code
             for code in codes
         }
         with tqdm(total=len(codes), desc="检查上市天数", ncols=100) as pbar:
@@ -211,7 +220,7 @@ def download_full_history(
 
     with ThreadPoolExecutor(max_workers=_workers) as executor:
         futures = {
-            executor.submit(client.download_daily_data, code, START_DATE, None, "qfq"): code
+            executor.submit(client.download_daily_data, code, START_DATE, None, "hfq"): code
             for code in valid_codes
         }
         with tqdm(total=len(valid_codes), desc="下载日线", ncols=100) as pbar:
@@ -233,6 +242,48 @@ def download_full_history(
 
     elapsed = time.time() - step_start
     logger.info("日线数据下载完成: 成功=%d, 失败=%d, 耗时=%.1f秒", success_count, fail_count, elapsed)
+
+    # ============ Step 3b: 下载退市股历史数据（修复幸存者偏差） ============
+    # 退市股必须保留其退市前的历史数据进入回测样本，
+    # 否则组合在退市股上的损失会被完全掩盖
+    logger.info("=" * 60)
+    logger.info("Step 3b: 下载退市股历史数据（修复幸存者偏差）")
+    logger.info("=" * 60)
+    try:
+        delist_df = client.get_delisted_stock_list()
+        if not delist_df.empty:
+            delist_codes = delist_df["code"].tolist()
+            logger.info("退市股: %d 只，开始下载历史数据...", len(delist_codes))
+            delist_success = 0
+            delist_fail = 0
+            with ThreadPoolExecutor(max_workers=_workers) as executor:
+                delist_futures = {
+                    executor.submit(
+                        client.download_daily_data, code, START_DATE, None, "hfq"
+                    ): code
+                    for code in delist_codes
+                    if not _is_beijiao(code)
+                }
+                with tqdm(total=len(delist_futures), desc="退市股下载", ncols=100) as pbar:
+                    for future in as_completed(delist_futures):
+                        code = delist_futures[future]
+                        try:
+                            df_delist = future.result()
+                            if df_delist is not None and len(df_delist) > 0:
+                                save_path = PARQUET_DIR / f"{code}.parquet"
+                                df_delist.to_parquet(str(save_path), index=False)
+                                delist_success += 1
+                            else:
+                                delist_fail += 1
+                        except Exception as e:
+                            delist_fail += 1
+                            logger.debug("退市股 %s 下载失败: %s", code, str(e)[:80])
+                        pbar.update(1)
+            logger.info("退市股下载完成: 成功=%d, 失败=%d", delist_success, delist_fail)
+        else:
+            logger.warning("未获取到退市股列表，跳过退市股下载")
+    except Exception as e:
+        logger.warning("退市股下载流程异常: %s", str(e)[:120])
 
     # ============ Step 4: 下载指数数据 ============
     if not skip_index:

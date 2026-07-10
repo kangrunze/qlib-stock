@@ -43,16 +43,37 @@ def compute_daily_rank_ic(pred: pd.Series, label: pd.Series) -> pd.Series:
 
     pred/label 均为 MultiIndex(datetime, instrument) 的 Series。
     返回 index 为日期、值为当日 RankIC 的 Series。
+
+    实现说明：Spearman 相关 = Pearson(组内 rank)。先用 groupby.rank() 向量化
+    计算组内排名，再用组内标准化 + 点积求 Pearson，避免逐日 apply(lambda) 的
+    Python 回调开销，在大样本下有显著加速。
     """
     df = pd.DataFrame({"pred": pred, "label": label}).dropna()
-    daily_ic = df.groupby(level=0).apply(
-        lambda x: x["pred"].corr(x["label"], method="spearman") if len(x) > 2 else float("nan")
-    )
+    if df.empty:
+        return pd.Series(dtype=float)
+
+    # 过滤每日样本数 < 3 的日期（少于 3 个样本无统计意义）
+    counts = df.groupby(level=0).size()
+    valid_dates = counts[counts >= 3].index
+    df = df[df.index.get_level_values(0).isin(valid_dates)]
+    if df.empty:
+        return pd.Series(dtype=float)
+
+    # 组内 rank（Spearman = Pearson of ranks）
+    ranked = df.groupby(level=0).rank()
+
+    # 组内标准化后点积 = Pearson 相关
+    grouped = ranked.groupby(level=0)
+    pred_z = grouped["pred"].transform(lambda x: (x - x.mean()) / x.std() if x.std() > 0 else 0.0)
+    label_z = grouped["label"].transform(lambda x: (x - x.mean()) / x.std() if x.std() > 0 else 0.0)
+
+    # 组内均值即为 Pearson 相关系数
+    daily_ic = (pred_z * label_z).groupby(level=0).mean()
     return daily_ic.dropna()
 
 
-def get_ic_series(model, dataset) -> pd.Series:
-    """在测试集上预测并计算逐日 RankIC 序列。
+def get_ic_series(model, dataset, segment: str = "test") -> pd.Series:
+    """在指定段上预测并计算逐日 RankIC 序列。
 
     本函数封装了"预测 → 计算 IC"这一核心逻辑，供 run.py 中
     cmd_drift / cmd_ic_stability / cmd_regime 以及 evaluate_fold() 统一调用，
@@ -61,18 +82,19 @@ def get_ic_series(model, dataset) -> pd.Series:
     Args:
         model: 已训练好的 Qlib 模型
         dataset: Qlib DatasetH 实例
+        segment: 数据段名称，默认 "test"。
+            超参搜索（Optuna）应传 "valid" 以避免验证集泄露。
 
     Returns:
         pd.Series，index 为日期，值为当日 RankIC（Spearman）
     """
-    test_data = dataset.prepare("test", col_set=["feature", "label"])
-    preds = model.predict(dataset, segment="test")
-    labels = test_data["label"]
-    ic_series = compute_daily_rank_ic(
+    data = dataset.prepare(segment, col_set=["feature", "label"])
+    preds = model.predict(dataset, segment=segment)
+    labels = data["label"]
+    return compute_daily_rank_ic(
         preds,
         labels.iloc[:, 0] if labels.ndim > 1 else labels,
     )
-    return ic_series
 
 
 def evaluate_fold(model, dataset, label_horizon: int = 20) -> dict:
