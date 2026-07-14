@@ -1,0 +1,144 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# Top 1 配置 — rank1_csi500_optuna22_ndrop1
+# =============================================================================
+#
+# 回测绩效（2025-07-01 ~ 2026-06-25，基准 SH000300）:
+#   超额收益(扣前):  +18.65%
+#   超额收益(扣后):  +15.19%
+#   IR(扣后):        +1.074
+#   年化换手率:      17.30x
+#   成本拖累:        3.46%
+#   最大回撤:        -19.12%
+#   best_iteration:  1
+#   recorder_id:     8a6ad9fa248445a7b1288339b8a01edc
+#
+# 配置说明: csi500专属Optuna#22 + 极低换手(n_drop=1)，扣后超额+15.19%
+#
+# 使用方式:
+#   python run.py full --config configs/top5/rank1_csi500_optuna22_ndrop1.yaml
+#   python run.py backtest --rid <recorder_id> --experiment qlib_pipeline --config configs/top5/rank1_csi500_optuna22_ndrop1.yaml
+# =============================================================================
+# =============================================================================
+# 1. Qlib 引擎配置
+# =============================================================================
+qlib:
+  provider_uri: "D:/project/qlib_bin"
+  region: "cn"
+
+# =============================================================================
+# 2. 数据源配置
+# =============================================================================
+data_source:
+  data_format: "csv"
+  csv_dir: "D:/data"
+  parquet_dir: "d:/project/qlib-stock/stock-ai/data/daily"
+  start_date: "2005-01-01"
+  max_workers: 10
+  retry_max: 3
+  retry_delay: 2
+
+# =============================================================================
+# 3. 选股池配置
+# =============================================================================
+stock_universe:
+  exclude_boards: ["北交所"]
+  min_listed_days: 250
+  exclude_st: true
+  exclude_suspended: true
+
+# =============================================================================
+# 4. DataHandler 配置
+# =============================================================================
+data_handler:
+  freq: "day"
+  start_time: "2020-01-01"
+  end_time: "2026-06-25"
+  fit_start_time: "2020-01-01"
+  fit_end_time: "2023-06-30"
+  instruments: "csi500"               # 股票池: csi500（中证500）
+
+# =============================================================================
+# 5. 数据集配置 — 训练/验证/测试时间划分
+# =============================================================================
+dataset:
+  handler: "Alpha158"                 # 特征处理器: Alpha158（158个价量因子）
+  segments:
+    train: ["2020-01-01", "2024-06-30"]    # 训练集: 约 4.5 年
+    valid: ["2024-07-01", "2025-06-30"]    # 验证集: 约 1 年
+    test:  ["2025-07-01", "2026-06-25"]    # 测试集: 约 1 年
+
+# =============================================================================
+# 6. LightGBM 模型配置
+# =============================================================================
+qlib_lgb:
+  class: "LGBModel"
+  module_path: "qlib.contrib.model.gbdt"
+  kwargs:
+    loss: "rank"                      # 损失函数: rank（LambdaRank 排序）
+    colsample_bytree: 0.6974437712278172    # 特征采样比例
+    learning_rate: 0.02753692843286637          # 学习率
+    subsample: 0.9994223893090083                  # 样本采样比例
+    lambda_l1: 1.1943120214471206e-07                  # L1 正则化
+    lambda_l2: 1.2629315477077766e-08                  # L2 正则化
+    max_depth: 4                  # 最大树深度
+    num_leaves: 55                # 叶子节点数
+    num_threads: 8                               # 训练线程数
+    min_child_samples: 76  # 最小叶子样本数
+    early_stopping_rounds: 50                     # 早停轮数
+
+# =============================================================================
+# 7. 回测配置
+# =============================================================================
+backtest:
+  executor:
+    class: "SimulatorExecutor"
+    module_path: "qlib.backtest.executor"
+    kwargs:
+      time_per_step: "day"
+      generate_portfolio_metrics: true
+
+  strategy:
+    class: "TopkDropoutStrategy"
+    module_path: "qlib.contrib.strategy.signal_strategy"
+    kwargs:
+      topk: 30                        # 选股数量: 30 只
+      n_drop: 1                    # 每期替换数
+
+  backtest:
+    start_time: "2025-07-01"
+    end_time: "2026-06-25"
+    account: 1000000
+    benchmark: "SH000300"
+    exchange_kwargs:
+      freq: "day"
+      limit_threshold: 0.099
+      deal_price: "open"              # 成交价: 次日开盘（消除前视偏差）
+      open_cost: 0.0005               # 开仓手续费: 0.05%
+      close_cost: 0.0015              # 平仓手续费: 0.15%（含印花税）
+      min_cost: 5                     # 最低佣金: 5 元
+
+# =============================================================================
+# 8. 实验配置
+# =============================================================================
+experiment:
+  name: "qlib_pipeline"
+  mlflow_tracking_uri: "mlruns/"
+  log_artifacts: true
+  random_seed: 42
+
+# =============================================================================
+# 9. Label 配置
+# =============================================================================
+labels:
+  types:
+    - name: "ret_20d"
+      horizon: 20
+      description: "未来20日收益率"
+    - name: "ret_60d"
+      horizon: 60
+      description: "未来60日收益率"
+    - name: "ret_120d"
+      horizon: 120
+      description: "未来120日收益率"
+  primary: "ret_60d"                  # 主标签: ret_60d（ICIR=0.378，ret_20d 的 3 倍）

@@ -1,7 +1,8 @@
 # 技术架构说明
 
-> 文档版本: v3.2  
-> 更新日期: 2026-07-06
+> 文档版本: v4.0  
+> 更新日期: 2026-07-10  
+> 变更摘要: 新增 RankLGBModel 参数名映射机制、stock_universe 过滤策略修复、调参层 dataset 复用优化、回测结果提升说明
 
 ---
 
@@ -196,8 +197,10 @@ workflow_config.yaml
     ▼
 build_task(config)
     │
+    ├── stock_universe 过滤（仅 instruments="all" 时生效）
     ├── dataset: DatasetH(handler=Alpha158, segments={train/valid/test})
-    └── model: LGBModel(loss=mse, ...)
+    │     └── xs_ret_Nd 标签自动注入 CSMedianSubtract learn_processor
+    └── model: LGBModel(loss=mse) 或 RankLGBModel(loss=rank)
     │
     ▼
 model.fit(dataset)          # 训练 + early stopping
@@ -206,7 +209,57 @@ model.fit(dataset)          # 训练 + early stopping
 R.save_objects(trained_model=model)  # 保存到 MLflow Recorder
 ```
 
-### 4.2 时间体系
+### 4.2 模型类路由
+
+`build_task()` 根据 `qlib_lgb.kwargs.loss` 自动选择模型类：
+
+| `loss` | 模型类 | 模块路径 | 训练方式 |
+|--------|--------|---------|---------|
+| `"mse"` | `LGBModel` | `qlib.contrib.model.gbdt` | sklearn API（`fit(X, y)`） |
+| `"rank"` | `RankLGBModel` | `qlib_pipeline.model` | LightGBM 原生（`lgb.train()`） |
+
+`RankLGBModel` 绕过 Qlib 0.9.7 `LGBModel` 的 loss 白名单校验（只支持 mse/binary），
+直接使用 LightGBM 原生的 `objective="lambdarank"` 实现选股排序学习。
+
+### 4.3 RankLGBModel 参数名映射
+
+`RankLGBModel` 使用 `lgb.train()` 而非 sklearn API，**不识别 sklearn 风格的参数名**。
+`__init__` 中自动将 sklearn API 参数名转换为 LightGBM 原生名：
+
+```python
+param_map = {
+    "subsample": "bagging_fraction",
+    "colsample_bytree": "feature_fraction",
+    "subsample_freq": "bagging_freq",
+}
+# bagging_freq 默认设为 1，使 bagging_fraction 生效
+if "bagging_fraction" in converted and "bagging_freq" not in converted:
+    converted["bagging_freq"] = 1
+```
+
+> ⚠ **历史 Bug**：2026-07-10 修复前，参数名未转换，导致 `subsample`/`colsample_bytree`
+> 被 `lgb.train()` 静默忽略，Optuna 搜索这两个参数时所有 trial 等效（返回相同 IC）。
+
+### 4.4 stock_universe 过滤策略
+
+`_build_stock_universe_instruments()` 在 `build_task()` 中调用，过滤逻辑：
+
+| `data_handler.instruments` | stock_universe 过滤 | 原因 |
+|---------------------------|--------------------|----|
+| `"all"` | ✅ 生效 | 全市场需要 ST/次新股/北交所过滤 |
+| `"csi300"`/`"csi500"`/`"csi800"` | ❌ 跳过 | 指数成分股池已自带质量过滤；且其 instruments 文件的 `start_date` 是指数纳入日期而非上市日期，`min_listed_days` 会错误调整纳入日期导致训练数据为空 |
+
+### 4.5 CSMedianSubtract 处理器
+
+`xs_ret_Nd` 标签的标准实现：截面中位数减法（`xs_ret = ret - 截面中位数(ret)`）。
+
+作为 Qlib **learn_processor** 使用（非 infer_processor），确保训练和推理口径一致：
+- 训练时：label 经过截面中位数减法
+- 推理时：预测值同样基于减去中位数的 label 训练，口径统一
+
+注入逻辑：`build_task()` 检测到 `primary` 为 `xs_ret_Nd` 时，自动在 `learn_processors` 中追加 `CSMedianSubtract`，保留 Alpha158 默认的 `DropnaLabel` 和 `CSZScoreNorm`。
+
+### 4.6 时间体系
 
 ```
 |<--- data_handler.start/end (全部加载数据) ----------------------->|
@@ -220,9 +273,9 @@ R.save_objects(trained_model=model)  # 保存到 MLflow Recorder
 - `backtest.end_time` 不能超出日历最后交易日
 - 训练集需要比实际训练期早至少 1 年（技术指标 lookback）
 
-### 4.3 模型预测
+### 4.7 模型预测
 
-Qlib 的 `LGBModel.predict()` 签名为 `predict(dataset, segment="test")`，内部自动调用 `dataset.prepare()`。不要传入 DataFrame 或手动 prepare。
+Qlib 的 `LGBModel.predict()` 签名为 `predict(dataset, segment="test")`，内部自动调用 `dataset.prepare()`。`RankLGBModel.predict()` 签名一致，返回每个样本的排序分数（绝对值无意义，只有相对排序有意义）。不要传入 DataFrame 或手动 prepare。
 
 ---
 
@@ -332,5 +385,93 @@ workflow_config.yaml
     ├── rolling.py          → Qlib 初始化
     ├── tscv.py             → Qlib 初始化
     ├── regime.py           → Qlib 初始化
-    └── sensitivity.py      → Qlib 初始化
+    ├── sensitivity.py      → Qlib 初始化 + dataset 复用
+    └── optuna_search.py    → Qlib 初始化 + dataset 复用
 ```
+
+---
+
+## 8. 调参层设计
+
+### 8.1 调参流程（探索/确认两阶段协议）
+
+遵循第 7.3 节协议，按顺序执行：
+
+```
+1. 敏感性分析 (sensitivity.py)
+   └── 单变量扫描，识别关键超参（learning_rate/max_depth/subsample 等）
+       └── dataset 跨参数扫描复用（首次加载 ~10 分钟，后续每个扫描点 ~20 秒）
+
+2. Optuna 贝叶斯搜索 (optuna_search.py)
+   └── 多变量联合优化，最大化 valid IC 均值
+       └── dataset 跨 trial 复用（首次加载 ~10 分钟，后续每个 trial ~20 秒）
+       └── 时间戳 study_name + load_if_exists=False（避免加载旧 study）
+
+3. 滚动验证 (rolling.py)
+   └── 用最优参数在多个时间窗口验证稳定性
+```
+
+### 8.2 dataset 复用机制
+
+`optuna_search.py` 和 `sensitivity.py` 均实现了 dataset 复用，避免每次 trial/扫描点重新加载 ~10 分钟数据：
+
+| 模块 | 实现方式 |
+|------|---------|
+| `optuna_search.py` | `shared_state["dataset"]` 在 trials 间传递，`_single_trial_ic` 接收 `dataset` 参数 |
+| `sensitivity.py` | `shared_dataset` 在参数扫描间传递，`_single_train` 接收 `dataset` 参数 |
+
+复用前提：handler 配置不变时数据相同（仅模型参数变化）。
+
+### 8.3 Optuna 搜索空间
+
+```python
+learning_rate:    log-uniform, 0.01 ~ 0.2
+num_leaves:       int, 15 ~ 63 (step=4)
+max_depth:        int, 3 ~ 6
+subsample:        uniform, 0.5 ~ 1.0
+colsample_bytree: uniform, 0.5 ~ 1.0
+lambda_l1:        log-uniform, 1e-8 ~ 100
+lambda_l2:        log-uniform, 1e-8 ~ 100
+min_child_samples: int, 10 ~ 100
+```
+
+> 搜索空间严格收窄（num_leaves ≤ 63, max_depth ≤ 6），防止中长周期因子数据信噪比低时过拟合。
+
+---
+
+## 9. 最新回测结果（2026-07-10）
+
+### 9.1 配置
+
+| 项 | 值 |
+|----|-----|
+| 特征处理器 | Alpha158 |
+| 模型 | RankLGBModel (LambdaRank) |
+| 标签 | xs_ret_20d（截面中位数减法） |
+| 股票池 | csi300 |
+| 训练/验证/测试 | 2020-01-01 ~ 2024-06-30 / 2024-07-01 ~ 2025-06-30 / 2025-07-01 ~ 2026-06-25 |
+| 回测区间 | 2025-07-01 ~ 2026-06-25（239 个交易日） |
+| 策略 | TopkDropout, topk=30, n_drop=5 |
+| 基准 | 沪深300 (SH000300) |
+
+### 9.2 回测指标
+
+| 指标 | 基准(沪深300) | 超额(无成本) | 超额(含成本) |
+|------|-------------|-------------|-------------|
+| 年化收益 | 25.42% | 30.11% | 22.79% |
+| 信息比率 | 1.648 | 2.912 | 2.202 |
+| 最大回撤 | -7.90% | -7.32% | -7.79% |
+
+- `best_iteration=3`（浅树+强正则配置下早停合理）
+- NDCG@1=0.337, NDCG@5=0.342
+
+### 9.3 调优历程
+
+| 阶段 | 配置变更 | 超额(含成本) | IR | 关键发现 |
+|------|---------|-------------|-----|---------|
+| 修复前 | mse, depth=8, 参数名 bug | — | — | subsample/colsample 被静默忽略 |
+| 30-trial Optuna | rank, depth=5, lr=0.028 | -12.55% | -1.167 | best_iter=1，单棵树太弱 |
+| 降 lr | rank, depth=5, lr=0.01 | -18.63% | -1.517 | NDCG 与回测收益不相关 |
+| **7-trial Optuna** | **rank, depth=3, min_child=90, early_stop=100** | **+22.79%** | **2.202** | 浅树+强正则泛化更好 |
+
+**核心结论**：浅树（max_depth=3）+ 强正则（min_child_samples=90）即使 best_iteration 较小，也远优于深树配置。NDCG 排序指标不能完全代表组合预测能力，需结合回测验证。

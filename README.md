@@ -2,6 +2,17 @@
 
 基于 Microsoft Qlib 的 A 股量化选股系统，支持特征工程、多模型训练、回测分析、选股推荐、稳健性验证和风险诊断。
 
+## 最新回测结果（2026-07-10）
+
+| 指标 | 基准(沪深300) | 超额(无成本) | 超额(含成本) |
+|------|-------------|-------------|-------------|
+| 年化收益 | 25.42% | 30.11% | **22.79%** |
+| 信息比率 | 1.648 | 2.912 | **2.202** |
+| 最大回撤 | -7.90% | -7.32% | -7.79% |
+
+> 配置：Alpha158 + RankLGBModel(LambdaRank) + xs_ret_20d + csi300 + Top-30
+> 回测区间：2025-07-01 ~ 2026-06-25（239 个交易日）
+
 ## 快速开始
 
 ```bash
@@ -24,7 +35,7 @@ python run.py update
 | 模块 | 功能 | 命令 |
 |------|------|------|
 | 数据管理 | AKShare 下载 / CSV 转 Qlib bin / 增量更新 | `python run.py data` / `python run.py update` |
-| 模型训练 | Qlib LGBModel + Alpha158/360 | `python run.py train` |
+| 模型训练 | Qlib LGBModel / RankLGBModel(LambdaRank) + Alpha158/360 | `python run.py train` |
 | 回测分析 | TopkDropoutStrategy + 图表生成 + 风格暴露诊断 | `python run.py backtest --rid <ID>` |
 | 选股推荐 | Top-K 股票推荐 + 历史验证 | `python run.py pick` / `python run.py validate-picks` |
 | 稳健性验证 | Walk-Forward / IC 稳定性 / 特征漂移 | `python run.py rolling` / `python run.py ic-stability` / `python run.py drift` |
@@ -95,10 +106,10 @@ qlib-stock/
 
 ## 文档索引
 
-- [运行说明](docs/user-guide.md) — 所有命令的使用方法和参数说明
-- [配置参考](docs/configuration.md) — settings.yaml 和 workflow_config.yaml 详细说明
-- [技术架构](docs/technical-guide.md) — 系统设计、数据流、管线说明
+- [运行说明](docs/user-guide.md) — 所有命令的使用方法和参数说明（v4.0）
+- [配置参考](docs/configuration.md) — settings.yaml 和 workflow_config.yaml 详细说明（v4.0）
+- [技术架构](docs/technical-guide.md) — 系统设计、数据流、管线说明、调参层设计、回测结果（v4.0）
 
 ## 技术栈
 
-Python 3.10 · Qlib 0.9.7 · LightGBM · Pandas · NumPy 1.x · Plotly · AKShare · Optuna
+Python 3.10 · Qlib 0.9.7 · LightGBM (LambdaRank) · Pandas · NumPy 1.x · Plotly · AKShare · Optuna

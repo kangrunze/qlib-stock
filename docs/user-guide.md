@@ -1,8 +1,9 @@
 # 运行说明
 
-> 文档版本: v3.2  
-> 更新日期: 2026-07-06  
-> 适用项目: `d:/project/qlib-stock`
+> 文档版本: v4.0  
+> 更新日期: 2026-07-10  
+> 适用项目: `d:/project/qlib-stock`  
+> 变更摘要: 新增调参工作流说明、补充 stock_universe 空数据问题修复、更新常见问题
 
 ---
 
@@ -326,6 +327,33 @@ python run.py full --handler Alpha360 --loss rank --topk 30 --output-dir output/
 python run.py full --config qlib_pipeline/workflow_config.yaml
 ```
 
+### 4.6 超参调优工作流（推荐顺序）
+
+调优应按以下顺序执行，每步基于上一步结果：
+
+```bash
+# 步骤 1: 敏感性分析 — 识别关键超参（~5 分钟，dataset 复用）
+python run.py sensitivity
+
+# 步骤 2: Optuna 贝叶斯搜索 — 多变量联合优化（~10 分钟首次加载 + ~20 秒/trial）
+python run.py optuna --n-trials 30 --timeout 1800
+
+# 步骤 3: 手动更新 workflow_config.yaml 的 qlib_lgb.kwargs 为最优参数
+#         （参考 output/optuna/<timestamp>/optuna_trials.csv 的 best_params）
+
+# 步骤 4: 完整训练+回测验证
+python run.py full --topk 30 --phase confirmation
+
+# 步骤 5: 滚动验证稳定性（可选）
+python run.py rolling --n-folds 6
+```
+
+> ⚠ **调优经验（2026-07-10）**：
+> - 浅树（`max_depth=3`）+ 强正则（`min_child_samples=90`）优于深树配置
+> - NDCG 排序指标不能完全代表组合预测能力，valid IC 高的参数回测不一定好
+> - `subsample`/`colsample_bytree` 参数名必须正确映射（见 [技术架构](technical-guide.md#43-ranklgbmodel-参数名映射)）
+> - `early_stopping_rounds` 从默认 50 增至 100，给模型更多训练空间
+
 ---
 
 ## 5. 常见问题
@@ -371,6 +399,40 @@ python run.py full --config qlib_pipeline/workflow_config.yaml
 **原因**：`D:/trae/qlib_bin/instruments/` 下文件可能被写入二进制数据损坏。
 
 **修复**：重新运行 `python run.py data --convert` 重建 instruments 文件。
+
+### 5.6 训练报 Empty data from dataset（stock_universe 过滤导致）
+
+**现象**：`ValueError: Empty data from dataset, please check your dataset config.`
+
+**原因**：`stock_universe.min_listed_days` 对指数成分股池（csi300/csi500/csi800）错误生效。
+指数 instruments 文件的 `start_date` 是指数纳入日期而非上市日期，
+`min_listed_days=250` 会将纳入日期后移 250 天，导致所有股票的生效日期超出训练区间。
+
+**修复**（2026-07-10 已修复）：`stock_universe` 过滤在训练阶段仅对 `instruments="all"` 生效，
+指数成分股池自动跳过。若仍遇到此问题，检查 `data_handler.instruments` 配置。
+
+### 5.7 Optuna 搜索所有 trial 返回相同 IC（参数名 bug）
+
+**现象**：`optuna_trials.csv` 中所有 trial 的 `value` 完全相同，尽管参数不同。
+
+**原因**：`RankLGBModel` 使用 `lgb.train()` 而非 sklearn API，不识别 `subsample`/`colsample_bytree` 参数名，
+导致这两个参数被静默忽略，所有 trial 在这两个维度上等效。
+
+**修复**（2026-07-10 已修复）：`RankLGBModel.__init__` 中添加参数名映射：
+- `subsample` → `bagging_fraction`
+- `colsample_bytree` → `feature_fraction`
+- `subsample_freq` → `bagging_freq`（默认设为 1 使 bagging_fraction 生效）
+
+详见 [技术架构 - RankLGBModel 参数名映射](technical-guide.md#43-ranklgbmodel-参数名映射)。
+
+### 5.8 回测前视偏差（deal_price=close）
+
+**现象**：回测收益异常高，与实际交易不符。
+
+**原因**：`exchange_kwargs.deal_price=close` 假设 t 日收盘生成信号即可按 t 日收盘价成交，
+违反 A 股 T+1 制度（t 日收盘时无法下单成交 t 日收盘价）。
+
+**修复**（2026-07-09 已修复）：改为 `deal_price=open`，t 日收盘生成信号，t+1 日开盘价成交。
 
 ---
 
