@@ -71,7 +71,7 @@
 qlib:
   # ⚠ provider_uri 必须与 config/settings.yaml:data_source.qlib_dir 保持一致
   # provider_uri: "d:/project/qlib-stock/qlib_data/cn_data"  # Qlib bin 数据目录
-  provider_uri: "D:/trae/qlib_bin"
+  provider_uri: "D:/project/qlib_bin"
   region: "cn"                    # 市场区域: cn=A股沪深, us=美股
 
 # =============================================================================
@@ -142,7 +142,7 @@ data_handler:
   # ★ 股票池: csi300(沪深300) | csi500(中证500) | csi800(中证800) | all(全A股)
   #   控制训练/验证/测试中使用的股票范围
   #   csi300 标的少、质量高、训练快；all 标的多、噪声大、更贴近实战
-  instruments: "csi300"
+  instruments: "csi500"
 
 # =============================================================================
 # 5. 数据集配置 — 训练/验证/测试时间划分 ★
@@ -188,21 +188,21 @@ qlib_lgb:
   module_path: "qlib.contrib.model.gbdt"   # Qlib 模块路径（loss=rank 时自动切换为 qlib_pipeline.model）
   kwargs:
     loss: "rank"               # ★ 损失函数: rank(LambdaRank 排序) — benchmark E2 确认 NW显著优于 mse
-    # 2026-07-10 参数决策:
-    #   Optuna 100-trial 搜索结果(trial #18)将 lambda_l1/l2 降至~0、num_leaves 增至63、
-    #   min_child_samples 增至87，导致 best_iteration=1（过拟合+无正则化→首棵树即饱和）。
-    #   回退至 benchmark 验证过的原始参数（IC=0.053, NW显著, 21次迭代），
-    #   仅保留 loss=rank 决策（E2 确认优于 mse）。
-    #   benchmark E1-E7 结论: Alpha158+rank 最优组合
-    colsample_bytree: 0.559360038123945   # 特征采样比例（benchmark 验证参数）
-    learning_rate: 0.016176235387725026   # 学习率（benchmark 验证参数，允许 21 次迭代）
-    subsample: 0.8405016192848853         # 样本采样比例（benchmark 验证参数）
-    lambda_l1: 70.99426901100655          # L1 正则化（强正则化防止首棵树饱和）
-    lambda_l2: 0.14033014224015933        # L2 正则化（benchmark 验证参数）
-    max_depth: 4               # 最大深度（benchmark 验证参数）
-    num_leaves: 15            # 叶子节点数（benchmark 验证参数）
+    # 2026-07-11 参数决策（第六轮 — csi500 ret_60d Optuna 50-trial 搜索结果）:
+    #   csi500 股票池扩大后重新调参，最优 trial #22，valid IC=0.046161。
+    #   与 csi300 Optuna #37 对比：lr 更低(0.028 vs 0.043)、depth 更深(4 vs 3)、
+    #   leaves 更多(55 vs 31)、L2 极弱(~0 vs 77.5)、L1 极弱(~0 vs 0.14)。
+    #   csi500 更多股票→更多数据→模型可承受更复杂结构+更弱正则化。
+    #   csi300 最优参数保留在项目记忆中: trial #37, IC=0.007027。
+    colsample_bytree: 0.6974437712278172  # 特征采样比例（csi500 Optuna trial #22）
+    learning_rate: 0.02753692843286637    # 学习率（csi500 Optuna trial #22）
+    subsample: 0.9994223893090083         # 样本采样比例（csi500 Optuna trial #22）
+    lambda_l1: 1.1943120214471206e-07     # L1 正则化（csi500 Optuna trial #22，极弱）
+    lambda_l2: 1.2629315477077766e-08     # L2 正则化（csi500 Optuna trial #22，极弱）
+    max_depth: 4                          # 最大深度（csi500 Optuna trial #22）
+    num_leaves: 55                        # 叶子节点数（csi500 Optuna trial #22）
     num_threads: 8             # 训练线程数（Windows 实测稳定值）
-    min_child_samples: 20     # 最小叶子样本数（标准默认值）
+    min_child_samples: 76      # 最小叶子样本数（csi500 Optuna trial #22）
     early_stopping_rounds: 50  # 早停轮数（标准默认值）
 
 # =============================================================================
@@ -235,13 +235,13 @@ backtest:
     module_path: "qlib.contrib.strategy.signal_strategy"
     kwargs:
       topk: 30                             # 回测时的选股数量
-      n_drop: 5                            # 回测时的每期替换数
+      n_drop: 1                            # 回测时的每期替换数（P3验证最优：扣后超额+15.19%）
 
   # --- 回测交易参数（PortAnaRecord 嵌套结构） ---
   backtest:
     start_time: "2025-07-01"               # ★ 回测起始日期（通常 = test 段起始）
     end_time: "2026-06-25"                 # ★ 回测截止日期（= 数据最后交易日，超出会报越界错误）
-    account: 100000000                 # 初始资金（1 亿元，Top-30 策略需足够资金满足 A 股最低 100 股/手）
+    account: 1000000                 # 初始资金（1 亿元，Top-30 策略需足够资金满足 A 股最低 100 股/手）
     benchmark: "SH000300"                  # 基准指数代码（沪深300指数，Phase C 修复后使用真实指数）
     exchange_kwargs:
       freq: "day"                          # 交易频率
@@ -316,4 +316,4 @@ labels:
     - name: "up_down_60d"
       horizon: 60
       description: "方向判断标签（60日，诊断用途，Phase B 新增，不作为独立训练目标）"
-  primary: "xs_ret_20d"             # ★ 主 Label（handler 默认使用的预测目标）
+  primary: "ret_60d"             # ★ 主 Label — benchmark E3 确认 ICIR=0.378（ret_20d 的 3 倍）

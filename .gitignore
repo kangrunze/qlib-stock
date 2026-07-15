@@ -78,3 +78,4 @@ catboost_info/
 # Qlib converted data (large binary files)
 qlib_data/
 mlruns/
+logs/

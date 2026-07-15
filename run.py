@@ -90,6 +90,83 @@ logging.basicConfig(
 logger = logging.getLogger("run")
 
 
+class _TeeWriter:
+    """同时向原始流和日志文件写入的分流器。
+
+    项目中大量使用 print() 输出回测摘要和选股推荐，
+    这些内容不会经过 logging 模块。通过替换 sys.stdout/sys.stderr
+    使 print() 输出同时写入控制台和日志文件，确保日志文件完整。
+    """
+
+    def __init__(self, original_stream, log_fp):
+        self._original = original_stream
+        self._log_fp = log_fp
+
+    def write(self, data):
+        if data:
+            self._original.write(data)
+            self._log_fp.write(data)
+
+    def flush(self):
+        self._original.flush()
+        self._log_fp.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+# 全局日志文件句柄，logging handler 和 _TeeWriter 共享同一句柄避免数据交错
+_log_file_fp = None
+
+
+def _setup_file_logging(command: str = "run") -> str:
+    """为本次执行设置日志文件输出，每次执行生成一个新的日志文件。
+
+    在保留控制台输出的同时，将日志写入 logs/ 目录下以
+    `{command}_{YYYYMMDD_HHMMSS}.log` 命名的文件，便于事后查阅。
+
+    同时处理两个层面：
+    1. logging 模块：通过 StreamHandler 捕获所有 logger 输出
+    2. print()/stderr：通过 _TeeWriter 重定向 stdout/stderr，
+       捕获 print() 和第三方库直接输出到 stderr 的内容
+
+    两路输出共享同一个文件句柄，避免数据交错覆盖。
+
+    Args:
+        command: 当前执行的子命令名称（用于日志文件命名）
+
+    Returns:
+        str: 本次执行的日志文件路径
+    """
+    global _log_file_fp
+    from datetime import datetime
+    log_dir = _PROJECT_ROOT / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"{command}_{timestamp}.log"
+
+    # 打开单个日志文件句柄，logging handler 和 _TeeWriter 共享
+    _log_file_fp = open(str(log_file), "w", encoding="utf-8")
+
+    # 1. 为 logging 模块添加 StreamHandler（使用同一文件句柄）
+    file_handler = logging.StreamHandler(_log_file_fp)
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(
+        fmt="%(asctime)s [%(levelname)5s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    root_logger = logging.getLogger()
+    root_logger.addHandler(file_handler)
+
+    # 2. 重定向 stdout/stderr，捕获 print() 和第三方库直接输出
+    sys.stdout = _TeeWriter(sys.stdout, _log_file_fp)
+    sys.stderr = _TeeWriter(sys.stderr, _log_file_fp)
+
+    logger.info("日志文件: %s", log_file)
+    return str(log_file)
+
+
 # ---- A股分板块涨跌停 Exchange 注入 ----
 # Qlib 原生 Exchange 的 limit_threshold 是单一标量，无法区分
 # 主板(±10%)/创业板(±20%)/科创板(±20%)/北交所(±30%)。
@@ -756,28 +833,35 @@ def _run_risk_diagnostics(config, ba_rid, pred_df, report_normal_df):
                     from qlib.data import D
                     vol_start = str(pd.Timestamp(pick_date) - pd.Timedelta(days=120))
                     vol_end = str(pick_date)
-                    volume_data = {}
+                    # 2026-07-10 修复：使用 $amount（成交额，元）而非 $volume（成交量，股），
+                    # check_portfolio_capacity 期望 avg_daily_volume 为成交额（元），
+                    # 用 $volume 会导致持仓金额÷成交股数=无意义比值，产生假报警。
+                    # 同时从配置读取真实 account_value，避免默认 1e8 与实际账户不符。
+                    account_value = config.get("backtest", {}).get("backtest", {}).get("account", 1000000)
+                    amount_data = {}
                     for stock in pick_stocks[:10]:
                         try:
-                            vol = D.features([stock], ["$volume"], start_time=vol_start, end_time=vol_end)
-                            if vol is not None and not vol.empty:
-                                volume_data[stock] = float(vol.mean().iloc[0]) if vol.shape[1] > 0 else 0.0
+                            amt = D.features([stock], ["$amount"], start_time=vol_start, end_time=vol_end)
+                            if amt is not None and not amt.empty:
+                                amount_data[stock] = float(amt.mean().iloc[0]) if amt.shape[1] > 0 else 0.0
                         except Exception:
                             pass
 
-                    if len(volume_data) >= 3:
-                        volume_series = pd.Series(volume_data)
+                    if len(amount_data) >= 3:
+                        volume_series = pd.Series(amount_data)
                         weights = pd.Series(1.0 / len(pick_stocks), index=pick_stocks[:len(volume_series)])
-                        result_df, all_ok = check_portfolio_capacity(weights, volume_series)
+                        result_df, all_ok = check_portfolio_capacity(
+                            weights, volume_series, account_value=account_value,
+                        )
                         if all_ok:
                             logger.info("  ✓ 容量检查通过 (持仓 ≤ 5%% 日均成交额)")
                         else:
                             n_fail = (~result_df["acceptable"]).sum()
                             logger.warning("  ⚠ %d/%d 只股票超出流动性约束", n_fail, len(result_df))
                     else:
-                        _log_phase_a_hint("容量检查", ["$volume", "日均成交额"])
+                        _log_phase_a_hint("容量检查", ["$amount", "日均成交额"])
                 except Exception:
-                    _log_phase_a_hint("容量检查", ["$volume", "日均成交额"])
+                    _log_phase_a_hint("容量检查", ["$amount", "日均成交额"])
         else:
             logger.info("  (选股结果为空，跳过容量检查)")
     except ImportError:
@@ -1912,13 +1996,14 @@ def cmd_capacity(args):
 
         # 尝试获取日均成交额
         try:
-            # 回看60个交易日获取成交量数据
+            # 回看60个交易日获取成交额数据
+            # 2026-07-10 修复：使用 $amount（成交额，元）而非 $volume（成交量，股）
             vol_start = str(pd.Timestamp(pick_date) - pd.Timedelta(days=120))
             vol_end = str(pick_date)
             volume_data = {}
             for stock in pick_stocks[:10]:  # 采样检查
                 try:
-                    vol = D.features([stock], ["$volume"], start_time=vol_start, end_time=vol_end)
+                    vol = D.features([stock], ["$amount"], start_time=vol_start, end_time=vol_end)
                     if vol is not None and not vol.empty:
                         volume_data[stock] = float(vol.mean().iloc[0]) if vol.shape[1] > 0 else 0.0
                 except Exception:
@@ -1929,7 +2014,7 @@ def cmd_capacity(args):
                     "  → 日均成交额数据不足（可用 %d/%d 只），跳过容量检查",
                     len(volume_data), min(10, len(pick_stocks)),
                 )
-                logger.info("  → 需要 Phase A 成交额数据（$volume/日均成交额）")
+                logger.info("  → 需要 Phase A 成交额数据（$amount/日均成交额）")
                 return
 
             # 实际执行容量检查
@@ -1982,6 +2067,8 @@ def cmd_benchmark(args):
 def main():
     os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
     args = parse_args()
+    # 为本次执行设置日志文件（每次执行生成新文件）
+    _setup_file_logging(args.command or "full")
     cmd_map = {
         "train": cmd_train, "backtest": cmd_backtest, "full": cmd_full,
         "pick": cmd_pick,

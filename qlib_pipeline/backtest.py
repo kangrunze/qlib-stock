@@ -383,7 +383,6 @@ def print_summary(report_normal_df, analysis_df, config: dict = None, picks_df =
 
                     if len(factor_data) >= 3:  # 至少有 3 个风格因子可用
                         # 构建因子值 DataFrame
-                        import pandas as pd
                         factor_df = pd.DataFrame(factor_data)
                         # 构建等权组合权重
                         weights = pd.Series(1.0 / len(pick_stocks), index=pick_stocks)

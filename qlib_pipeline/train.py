@@ -195,6 +195,17 @@ def _build_stock_universe_instruments(config: dict) -> Optional[str]:
     if not isinstance(base_market, str):
         return None  # instruments 已是自定义格式，不再过滤
 
+    # 指数成分股池（csi300/csi500/csi800）已自带质量过滤，
+    # 且其 instruments 文件的 start_date 是指数纳入日期而非上市日期，
+    # min_listed_days 过滤会错误调整纳入日期导致数据为空。
+    # stock_universe 过滤仅对 "all" 全市场生效。
+    if base_market != "all":
+        logger.info(
+            "stock_universe 过滤跳过: instruments=%s（指数成分股池无需过滤）",
+            base_market,
+        )
+        return None
+
     import os
     provider_uri = os.environ.get("QLIB_PROVIDER_URI") or config.get("qlib", {}).get("provider_uri")
     if not provider_uri:
@@ -422,7 +433,7 @@ def init_qlib_env(config: dict):
 
     from qlib.config import C
     C.joblib_backend = "threading"
-    C.maxtasksperchild = None
+    C.maxtasksperChild = None
     C.dataset_process_n_worker = 1
     C.min_data_shift = 1
 

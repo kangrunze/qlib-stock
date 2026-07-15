@@ -1,7 +1,8 @@
 # 配置参考
 
-> 文档版本: v3.2  
-> 更新日期: 2026-07-06
+> 文档版本: v4.0  
+> 更新日期: 2026-07-10  
+> 变更摘要: 新增 RankLGBModel 参数名映射说明、stock_universe 过滤策略修复、qlib_lgb 超参更新为 Optuna 最优值
 
 ---
 
@@ -120,7 +121,17 @@ stock_universe:
   exclude_suspended: true
 ```
 
-消费方：`run_qlib_workflow.py`（CSV 转 bin 时写入 `instruments/all.txt`）。
+消费方与生效范围：
+
+| 消费方 | 作用阶段 | 生效条件 |
+|--------|---------|---------|
+| `run_qlib_workflow.py` | CSV 转 bin | 始终生效，写入 `instruments/all.txt` |
+| `qlib_pipeline/train.py:_build_stock_universe_instruments()` | 训练/回测 | **仅当 `data_handler.instruments="all"` 时生效** |
+
+> ⚠ **重要变更（2026-07-10）**：指数成分股池（`csi300`/`csi500`/`csi800`）已自带质量过滤，
+> 且其 instruments 文件的 `start_date` 是指数纳入日期而非上市日期，
+> 对其应用 `min_listed_days` 会错误调整纳入日期导致训练数据为空（`ValueError: Empty data from dataset`）。
+> 因此 `stock_universe` 过滤在训练阶段**仅对 `"all"` 全市场生效**，指数成分股池自动跳过。
 
 ### 2.4 data_handler — 数据处理器
 
@@ -149,25 +160,59 @@ dataset:
 
 消费方：`qlib_pipeline/train.py:build_task()` → 作为 DatasetH 的 segments 参数。
 
-### 2.6 qlib_lgb — Qlib 原生 LGBModel
+### 2.6 qlib_lgb — Qlib 原生 LGBModel / RankLGBModel
 
 ```yaml
 qlib_lgb:
-  class: "LGBModel"
-  module_path: "qlib.contrib.model.gbdt"
+  class: "LGBModel"                        # Qlib 模型类名（loss=rank 时自动切换为 RankLGBModel）
+  module_path: "qlib.contrib.model.gbdt"   # Qlib 模块路径（loss=rank 时自动切换为 qlib_pipeline.model）
   kwargs:
-    loss: "mse"                       # mse / rank
-    colsample_bytree: 0.8879
-    learning_rate: 0.0421
-    subsample: 0.8789
-    lambda_l1: 205.6999
-    lambda_l2: 580.9768
-    max_depth: 8
-    num_leaves: 210
-    num_threads: 20
+    loss: "rank"                           # mse / rank（rank 使用 LambdaRank 排序目标）
+    # 以下超参为 2026-07-10 Optuna 7-trial 搜索最优值（valid IC=0.0122）
+    colsample_bytree: 0.8734341669478973
+    learning_rate: 0.026163773612656583
+    subsample: 0.8059350619095792
+    lambda_l1: 0.05639417059186902
+    lambda_l2: 1.7897519441564924e-08
+    max_depth: 3                           # 浅树防过拟合（Optuna 确认 3 优于 5/8）
+    num_leaves: 59
+    num_threads: 8                         # 训练线程数（Windows 实测稳定值）
+    min_child_samples: 90                  # 大值防过拟合
+    early_stopping_rounds: 100             # 早停轮数（从默认 50 增至 100，给更多训练空间）
 ```
 
 消费方：`qlib_pipeline/train.py:build_task()` → 构建 Qlib task dict 的 model 段。
+
+#### loss 函数路由
+
+| `loss` 值 | 实际模型类 | 模块路径 | 适用场景 |
+|-----------|-----------|---------|---------|
+| `"mse"` | `LGBModel` | `qlib.contrib.model.gbdt` | 回归模式，预测具体收益率数值 |
+| `"rank"` | `RankLGBModel` | `qlib_pipeline.model` | LambdaRank 排序模式，优化股票排序（推荐用于选股） |
+
+#### RankLGBModel 参数名映射（重要）
+
+`RankLGBModel` 内部使用 `lgb.train()` 而非 sklearn API，**不识别 sklearn 风格的参数名**。
+配置文件中的 sklearn API 参数名会被自动转换为 LightGBM 原生名：
+
+| 配置文件（sklearn API） | 转换后（LightGBM 原生） | 说明 |
+|------------------------|------------------------|------|
+| `subsample` | `bagging_fraction` | 行采样比例 |
+| `colsample_bytree` | `feature_fraction` | 列采样比例 |
+| `subsample_freq` | `bagging_freq` | 行采样频率（默认自动设为 1 使 bagging_fraction 生效） |
+
+> ⚠ **历史 Bug 说明**：2026-07-10 修复前，`subsample`/`colsample_bytree` 未做名称转换，
+> 被 `lgb.train()` 静默忽略，导致 Optuna 搜索这两个参数时所有 trial 等效。
+> 修复后参数才真正生效，回测超额收益从 -12.55% 提升到 +22.79%。
+
+#### 超参调优历史
+
+| 日期 | 配置 | valid IC | 回测超额(含成本) | IR | 备注 |
+|------|------|---------|----------------|-----|------|
+| 2026-07-06 前 | mse, depth=8, leaves=210 | — | — | — | 过拟合严重 |
+| 2026-07-10 (30-trial) | rank, depth=5, lr=0.028 | 0.0027 | -12.55% | -1.167 | best_iter=1，单棵树太弱 |
+| 2026-07-10 (lr=0.01) | rank, depth=5, lr=0.01 | — | -18.63% | -1.517 | NDCG 与回测收益不相关 |
+| **2026-07-10 (7-trial)** | **rank, depth=3, min_child=90** | **0.0122** | **+22.79%** | **2.202** | 浅树+强正则，best_iter=3 |
 
 ### 2.7 backtest — 回测引擎
 
@@ -180,17 +225,25 @@ backtest:
     class: "TopkDropoutStrategy"
     module_path: "qlib.contrib.strategy.signal_strategy"
     kwargs:
-      topk: 50
-      n_drop: 5
+      topk: 30                           # 选股数量
+      n_drop: 5                           # 每期替换数
   backtest:
     start_time: "2025-07-01"
     end_time: "2026-06-25"
     account: 100000000
     benchmark: "SH000300"             # 基准指数代码（沪深300指数）
     exchange_kwargs:
-      open_cost: 0.0005
-      close_cost: 0.0015
+      freq: "day"
+      limit_threshold: 0.099         # 涨跌停阈值（9.9%，留容差避免浮点误拒）
+      deal_price: "open"             # 成交价（次日开盘，消除前视偏差，不推荐 close）
+      open_cost: 0.0005              # 开仓手续费率（万 2.5）
+      close_cost: 0.0015             # 平仓手续费率（含印花税万 10）
+      min_cost: 5                    # 最低佣金（元）
 ```
+
+> ⚠ **2026-07-09 回测引擎修复**：
+> - `deal_price` 从 `close` 改为 `open`，消除 T+1 制度下的前视偏差
+> - `limit_threshold` 从 `0.095` 改为 `0.099`，避免接近涨停但未触板的订单被错误拒绝
 
 消费方：`run.py:cmd_full()` / `cmd_backtest()` → 传给 Qlib PortAnaRecord。
 
@@ -241,10 +294,14 @@ labels:
     - name: "up_down_60d"
       horizon: 60
       description: "方向判断标签（60日，诊断用途）"
-  primary: "ret_20d"
+  primary: "xs_ret_20d"                # ★ 主 Label（2026-07-10 更新：从 ret_20d 改为 xs_ret_20d）
 ```
 
 消费方：`qlib_pipeline/train.py:build_task()` → 传给 Alpha158/360 handler 生成 label 列。
+
+> ⚠ **primary 标签选择**：2026-07-10 第 8.4 节 E6 实验确认 `xs_ret_20d`（截面中位数减法）
+> 优于 `ret_20d`（绝对收益）。`xs_ret_Nd` 标签会自动注入 `CSMedianSubtract` learn_processor，
+> 作为 Qlib learn_processor 使用（训练+推理一致），确保标签口径统一。
 
 ---
 
