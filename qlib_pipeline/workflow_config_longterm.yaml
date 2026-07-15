@@ -19,7 +19,7 @@
 # =============================================================================
 qlib:
   # ⚠ provider_uri 必须与 config/settings.yaml:data_source.qlib_dir 保持一致
-  provider_uri: "D:/project/qlib_bin"
+  provider_uri: "D:/trae/qlib_bin"
   region: "cn"
 
 # =============================================================================
